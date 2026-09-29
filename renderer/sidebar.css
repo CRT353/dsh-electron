@@ -58,6 +58,9 @@ html, body {
 .alert-title { font-size: 12px; color: #ff8a8a; font-weight: 600; margin-bottom: 4px; }
 .alert-body { font-size: 12px; color: #ffb3b3; line-height: 1.5; white-space: pre-line; word-break: break-word; max-height: 220px; overflow-y: auto; }
 
+/* 允许选中/复制告警与详情文本（右键菜单的"复制"才有意义） */
+.alert-body, .detail-value, .status-value { user-select: text; cursor: text; }
+
 .notice { background: #22303a; border-color: #2f4d5d; }
 .notice .alert-title { color: #7fd4ff; }
 .notice .alert-body { color: #b6e2f5; }

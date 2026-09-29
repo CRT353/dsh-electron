@@ -1,6 +1,6 @@
 'use strict';
 // ============================================================
-// DSH Electron 外壳（v1.1.0 加固版）
+// DSH Electron 外壳（v1.2.0 加固版）
 //
 // 职责：
 //   1. 单实例运行；第二个实例只负责唤醒已有窗口。
@@ -10,11 +10,13 @@
 //   4. 系统托盘 + 关闭三选 + 状态翻转通知。
 //   5. 安全管控：导航白名单、外链 scheme 白名单、权限默认拒绝、
 //      IPC sender 校验、CSP、日志脱敏、远端目标默认拒绝。
+//   6. 右键菜单：复制/剪切/粘贴/全选、链接与地址复制、重载、DevTools、
+//      服务操作与"复制状态摘要"（协议白名单同样生效）。
 //
 // 业务逻辑都在 lib/ 下（可单测），本文件只做 Electron 装配。
 // ============================================================
 
-const { app, BrowserWindow, WebContentsView, shell, ipcMain, Tray, Menu, dialog, nativeImage, session } = require('electron');
+const { app, BrowserWindow, WebContentsView, shell, ipcMain, Tray, Menu, dialog, nativeImage, session, clipboard } = require('electron');
 const os = require('os');
 const path = require('path');
 const { pathToFileURL } = require('url');
@@ -24,6 +26,7 @@ const { createExec } = require('./lib/exec');
 const { findListenerPid } = require('./lib/procs');
 const { probeDsh, probeInternet, FlapGuard, detectTransitions } = require('./lib/health');
 const { decideNavigation, decideOpenExternal, decidePermission, describePolicy } = require('./lib/security');
+const { buildContextMenu } = require('./lib/context-menu');
 const { ServiceManager } = require('./lib/service');
 const { loadConfig } = require('./lib/config');
 
@@ -318,6 +321,112 @@ async function openLogFile() {
   }
 }
 
+// ---------- 右键菜单 ----------
+/** 人类可读的状态摘要：方便一键复制后贴给别人排查 */
+function buildStatusReport() {
+  const sm = service ? service.snapshot() : { mode: 'unknown' };
+  const lines = [
+    `DSH Electron 状态摘要（v${app.getVersion()}，Electron ${process.versions.electron}，Node ${process.versions.node}）`,
+    `时间: ${new Date().toLocaleString('zh-CN')}`,
+    `服务地址: ${safeUrl(config.url)}${config.remoteTarget ? '（远端目标）' : ''}`,
+    `服务来源: ${sm.mode}${sm.managed ? '（本程序管理）' : ''}${sm.adopted ? '（已接管）' : ''}`,
+    `监听进程: ${sm.listenerPid ? `pid ${sm.listenerPid} ${sm.listenerName || ''}${sm.listenerVerified ? '（命令行已校验）' : '（仅观察认定）'}` : (sm.observed && sm.observed.pid ? `非本程序 pid ${sm.observed.pid} ${sm.observed.name || ''}` : '未知')}`,
+    `DSH 服务: ${dshGuard.stable === true ? '在线' : '不可达'}${health.dsh ? `（${health.dsh.reason}${health.dsh.identity ? `, identity=${health.dsh.identity}` : ''}${health.dsh.status ? `, HTTP ${health.dsh.status}` : ''}）` : ''}`,
+    `网络: ${config.netCheck ? (netGuard.stable === true ? '在线' : '离线') : '未检测'}`,
+    `视图: ${viewState.state}${viewState.error ? `（${viewState.error}）` : ''}`,
+    `日志: ${config.logFile}`,
+    sm.lastKill ? `上次清理: ${sm.lastKill.reason} released=${sm.lastKill.released} [${sm.lastKill.steps.join(' → ')}]` : null,
+    sm.lastError ? `当前问题: ${sm.lastError}` : '当前问题: 无'
+  ].filter(Boolean);
+  return lines.join('\n');
+}
+
+/** 右键菜单动作：显式作用于"触发菜单的那个 webContents"，不依赖焦点 */
+function runContextAction(action, target, params) {
+  switch (action) {
+    case 'undo': target.undo(); break;
+    case 'redo': target.redo(); break;
+    case 'cut': target.cut(); break;
+    case 'copy': target.copy(); break;
+    case 'paste': target.paste(); break;
+    case 'paste-plain': target.pasteAndMatchStyle(); break;
+    case 'select-all': target.selectAll(); break;
+    case 'reload': target.reload(); break;
+    case 'open-link':
+      openExternalSafely(params.linkURL, 'context-menu');
+      break;
+    case 'copy-link':
+      clipboard.writeText(String(params.linkURL || ''));
+      logger.info('已复制链接地址（右键菜单）');
+      break;
+    case 'copy-page-url':
+      clipboard.writeText(safeUrl(target.getURL()));
+      logger.info('已复制页面地址（右键菜单）');
+      break;
+    case 'toggle-devtools':
+      target.toggleDevTools();
+      break;
+    case 'reload-view':
+      viewState.attempts = 0;
+      maybeLoadDshView('user');
+      break;
+    case 'restart-service':
+      service.restart({ force: false })
+        .then((res) => { logger.info(`右键菜单重启：ok=${res.ok} ${res.reason || ''}`); pushStatus(); })
+        .catch((err) => logger.error('右键菜单重启失败', err));
+      break;
+    case 'adopt-restart':
+      service.restart({ force: true })
+        .then((res) => { logger.warn(`右键菜单接管重启：ok=${res.ok} ${res.reason || ''}`); pushStatus(); })
+        .catch((err) => logger.error('右键菜单接管重启失败', err));
+      break;
+    case 'open-log':
+      openLogFile();
+      break;
+    case 'copy-status':
+      clipboard.writeText(buildStatusReport());
+      logger.info('已复制状态摘要（右键菜单）');
+      break;
+    default:
+      logger.warn(`未知的右键菜单动作: ${action}`);
+  }
+}
+
+function showContextMenu(target, scope, params) {
+  const sm = service ? service.snapshot() : { restartable: false, forceRestartable: false };
+  const items = buildContextMenu({
+    params,
+    options: {
+      scope,
+      devtools: config.devtools,
+      allowedSchemes: config.externalSchemes,
+      restartable: sm.restartable,
+      forceRestartable: sm.forceRestartable
+    }
+  });
+
+  const template = items.map((item) => {
+    if (item.type === 'separator') return { type: 'separator' };
+    return {
+      label: item.label,
+      enabled: item.enabled !== false && Boolean(item.action),
+      click: item.action ? () => runContextAction(item.action, target, params) : undefined
+    };
+  });
+
+  Menu.buildFromTemplate(template).popup({ window: win && !win.isDestroyed() ? win : undefined });
+}
+
+function attachContextMenu(contents, scope) {
+  contents.on('context-menu', (event, params) => {
+    try {
+      showContextMenu(contents, scope, params || {});
+    } catch (err) {
+      logger.error('弹出右键菜单失败', err);
+    }
+  });
+}
+
 // ---------- 窗口 ----------
 function layoutViews() {
   if (!win || win.isDestroyed() || !dshView) return;
@@ -349,6 +458,7 @@ function createWindow() {
 
   win.loadURL(SIDEBAR_URL).catch((err) => logger.error('侧边栏加载失败', err));
   guardWebContents(win.webContents, 'sidebar');
+  attachContextMenu(win.webContents, 'sidebar');
 
   const viewOptions = {
     contextIsolation: true,
@@ -393,6 +503,7 @@ function createWindow() {
     if (!config.devtools) return;
     if (input.type === 'keyDown' && input.key === 'F12') dshView.webContents.toggleDevTools();
   });
+  attachContextMenu(dshView.webContents, 'dsh-view');
 
   // 先显示本地占位页，服务就绪后由轮询自动切换到真实页面
   dshView.webContents.loadURL(PLACEHOLDER_URL).catch((err) => logger.warn(`占位页加载失败: ${err.message}`));

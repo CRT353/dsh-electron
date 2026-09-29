@@ -3,7 +3,11 @@
 把 DSH Web GUI（默认 `http://127.0.0.1:3080`）装进独立 Electron 窗口，并附带
 **服务生命周期管理、归属校验、状态监测侧边栏与安全加固**。
 
-当前版本 **v1.1.0**（v1.0.0 的功能等价实现见 git 快照 `d09f279`）。
+当前版本 **v1.2.0**（v1.1.0 = 生命周期与安全加固版；v1.0.0 原始实现见快照 `d09f279`，标签 `v1.0.0-snapshot`）。
+
+**v1.2.0 新增**：**右键上下文菜单**（复制 / 剪切 / 粘贴 / 粘贴为纯文本 / 全选、链接与页面地址复制、重载、
+DevTools、服务操作、"复制状态摘要"），不想记快捷键时可以直接右键。菜单在主进程构建，
+**链接协议白名单与导航策略同样生效**。
 
 ---
 
@@ -18,7 +22,7 @@
 | 5 | **状态会漂移却谎报"本程序管理"**：pid 已死、服务仍在跑（孤儿），侧边栏显示错误的 PID | 每次轮询校验 pid 存活并识别归属：`reuse / foreign / managed / orphan / takeover / stopped`，漂移时如实上报并给出"接管"入口，且不再声称 managed | `lib/service.js#refresh`、`renderer/sidebar.js` |
 | 6 | **日志把根因截断**（`slice(0,300)`），boot 失败的 cause/stack 全丢 | 日志支持完整堆栈与 `cause` 链、单条 8KB 上限（超出标注截断长度）、超 2MB 自动轮转、**凭据脱敏**（`token=`/Bearer/URL userinfo/长 token），内存环形缓冲供界面显示"最近错误" | `lib/log.js` |
 | 7 | **没有打包能力**（只有指向 `node_modules\electron\dist\electron.exe` 的快捷方式，图标 658B） | 内置 electron-builder 配置（NSIS/portable/dmg/AppImage，asar），`npm run gen-icon` 纯 Node 生成 256px PNG 与多尺寸 ICO | `package.json#build`、`tools/gen-icon.js` |
-| 8 | **零自动化测试**，只有一个假服务脚本 | 43 个用例：命令/端口解析、终止校验、健康判定、安全策略、日志脱敏与轮转、**真实子进程 + 真实端口**的生命周期集成测试，以及用假 Electron 驱动的 `main.js` 装配层烟雾测试 | `tests/*.test.js` |
+| 8 | **零自动化测试**，只有一个假服务脚本 | 53 个用例：命令/端口解析、终止校验、健康判定、安全策略、日志脱敏与轮转、右键菜单策略、**真实子进程 + 真实端口**的生命周期集成测试，以及用假 Electron 驱动的 `main.js` 装配层烟雾测试 | `tests/*.test.js` |
 | 9 | **健康检查过宽**：任意 `<500` 响应都算"DSH 活着"；单次抖动即翻红 | 区分 `reachable`（有响应）与 `ok`（身份确认：<500 且 `text/html`），弱身份在界面标注；状态用 `FlapGuard` 消抖（连续 2 次失败才判离线） | `lib/health.js` |
 | 10 | **跨平台假支持**：`taskkill`/`netstat -ano` 是 Windows 专有；macOS 下窗口全关不清理服务 | POSIX 走 `lsof` → `ss` + `SIGTERM/SIGKILL`；`window-all-closed` 在所有平台都清理并退出 | `lib/procs.js`、`main.js` |
 
@@ -38,6 +42,21 @@
 5. **关闭三选 + 系统托盘**：关闭窗口时询问"最小化到托盘 / 关闭并退出 / 取消"；托盘可恢复窗口、重启服务、打开日志、完全退出。
 6. **托盘通知**：窗口隐藏期间只在服务/网络状态**翻转**时弹气泡（窗口可见时交给侧边栏，不打扰）。
 7. **不跳出系统浏览器**：拉起用 `--no-open`；DSH 同源链接留在应用内，外链交给浏览器，其他协议一律拒绝。
+8. **右键菜单（v1.2.0）**：不想记快捷键时直接右键。
+
+### 右键菜单条目
+
+| 场景 | 条目 | 说明 |
+|---|---|---|
+| 有选中文本 | 剪切 / 复制 / 全选 | 按 `editFlags` 决定可用性，只读区域剪切禁用 |
+| 可编辑输入框 | 粘贴 / 粘贴为纯文本 | "粘贴为纯文本"可去掉富文本格式 |
+| 右键点在链接上 | 在系统浏览器中打开链接 / 复制链接地址 | 非 http(s) 协议**不出现可打开条目**，只显示一条不可点的"已阻止打开该链接（原因）" |
+| DSH 视图任意位置 | 复制页面地址 / 重新加载页面 / 开发者工具（F12） | 地址复制前同样去掉查询串与凭据 |
+| DSH 视图任意位置 | 刷新 DSH 视图 / 重启 DSH 服务 / 接管并重启（外部 dsh 时出现） | 与侧边栏按钮等价 |
+| 两处都有 | 复制状态摘要 / 打开日志 | 状态摘要=版本、地址、服务来源、监听 pid、健康、视图状态、上次清理步骤、当前问题，便于直接贴给他人排查 |
+
+右键菜单由主进程构建，动作显式作用于"触发菜单的那个 webContents"（不依赖焦点），
+并且**弹出的菜单本身也过协议白名单**（见下表"右键菜单"一行）。
 
 ---
 
@@ -50,6 +69,7 @@
 | 进程沙箱 | `app.enableSandbox()` 全局开启；窗口 `sandbox: true`、`contextIsolation: true`、`nodeIntegration: false`、`nodeIntegrationInSubFrames: false`、`webviewTag: false`、`allowRunningInsecureContent: false`、`safeDialogs: true` | `main.js` |
 | 导航 | DSH 视图仅允许**同源**在应用内导航；`will-navigate` / `will-redirect` / `window.open` 全部过策略；其他 http(s) 交系统浏览器；重定向不允许外跳；`file:` / `javascript:` / `data:` / `about:` / `ms-*` 等协议一律阻止并记日志 | `lib/security.js#decideNavigation` |
 | 外链 | `shell.openExternal` 只接受 `http:`/`https:`（可用 `DSH_EXTERNAL_SCHEMES` 调整），其余拒绝 | `lib/security.js#decideOpenExternal` |
+| 右键菜单 | 菜单模板在主进程生成，页面无法注入条目；"打开链接"复用外链协议白名单，被阻止时只给不可点的说明；动作通过 webContents 方法显式作用于触发者 | `lib/context-menu.js`、`main.js#showContextMenu` |
 | 权限 | `setPermissionRequestHandler` + `setPermissionCheckHandler` **默认拒绝**摄像头/麦克风/地理/通知/HID/串口/USB/剪贴板读取等；仅放行 `clipboard-sanitized-write` 且必须同源；设备权限一律拒绝 | `lib/security.js#decidePermission` |
 | IPC | 主进程只暴露 5 个固定 channel；每次调用校验 `event.sender === 侧边栏窗口`，来源不明直接拒绝并记日志；preload 不接受渲染进程传入的 channel 名 | `main.js#registerIpc`、`preload.js` |
 | 渲染层 | 侧边栏与占位页都有严格 CSP（`default-src 'self'`、`connect-src 'none'`、`object-src 'none'`、`base-uri 'none'`、`form-action 'none'`）；所有动态内容用 `textContent` 写入，杜绝日志/命令行/URL 造成的 XSS | `renderer/*` |
@@ -80,7 +100,7 @@
 ```powershell
 npm install                    # 首次
 npm start                      # 启动独立窗口
-npm test                       # 43 个自动化用例
+npm test                       # 53 个自动化用例
 npm run selftest               # 真实环境自检（建议在普通终端运行）
 npm run selftest -- --inspect 3080   # 只读查看 3080 被谁监听（不会终止任何进程）
 npm run gen-icon               # 重新生成 icon.png / build/icon.ico
@@ -131,7 +151,7 @@ npm run dist                   # 打包安装包（需 electron-builder）
 ## 八、测试与自检
 
 ```powershell
-npm test                        # 43 项：单测 + 集成测试 + main.js 装配层烟雾测试
+npm test                        # 53 项：单测 + 集成测试 + main.js 装配层烟雾测试
 npm run selftest                # 真实 netstat/ps → 认领 → taskkill/kill → 端口释放 全链路
 npm run selftest -- --inspect 3080
 ```
@@ -167,7 +187,7 @@ npm run dist                    # 输出到 dist/：Windows NSIS 安装包 + 免
 | 启动报"DSH_URL 指向非本机地址" | 安全默认值。确需远端请设 `DSH_ALLOW_REMOTE=1` |
 | 右侧一直停在占位页，但端口明明有响应 | 默认要求响应为 `text/html` 才认作 DSH（防止把陌生服务当 DSH 加载进外壳）。若你的入口返回其它类型，设 `DSH_HEALTH_REQUIRE_HTML=0` |
 
-### 从 v1.0.0 切换到 v1.1.0（重要）
+### 从旧版（v1.0.0 / v1.1.0）切换到 v1.2.0（重要）
 
 当前若还在跑旧实例，它的清理逻辑会"杀掉任何监听 3080 的进程"，因此：
 
@@ -202,12 +222,12 @@ npm start
 
 | 文件 | 作用 |
 |---|---|
-| `main.js` | 主进程装配：单实例、安全策略执行、窗口/视图/托盘、IPC、轮询与退出清理 |
+| `main.js` | 主进程装配：单实例、安全策略执行、窗口/视图/托盘、右键菜单、IPC、轮询与退出清理 |
 | `preload.js` | contextBridge 暴露 5 个固定接口给侧边栏 |
-| `renderer/index.html` `sidebar.css` `sidebar.js` | 侧边栏 UI（严格 CSP，全部 `textContent` 渲染） |
+| `renderer/index.html` `sidebar.css` `sidebar.js` | 侧边栏 UI（严格 CSP，全部 `textContent` 渲染，告警/详情文本可选中复制） |
 | `renderer/view-placeholder.html` | 服务未就绪时的占位页 |
-| `lib/*.js` | 可单测的业务逻辑（见上） |
-| `tests/*.test.js` | 41 个自动化用例；`tests/dummy-server.js` 为假 DSH 服务 |
+| `lib/*.js` | 可单测的业务逻辑（含 `context-menu.js` 右键菜单模板，见上） |
+| `tests/*.test.js` | 53 个自动化用例；`tests/dummy-server.js` 为假 DSH 服务 |
 | `tools/selftest.js` | 真实环境全链路自检 / 只读端口检查 |
 | `tools/gen-icon.js` | 纯 Node 生成 `icon.png` 与 `build/icon.ico` |
 | `build/icon.ico` `build/icon.png` | 打包资源（由 `gen-icon` 生成） |

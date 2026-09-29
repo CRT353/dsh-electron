@@ -1,6 +1,6 @@
 {
   "name": "dsh-electron",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "DSH Web GUI 的独立 Electron 窗口封装（含服务生命周期管理、归属校验与安全加固）",
   "main": "main.js",
   "scripts": {

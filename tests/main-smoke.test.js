@@ -40,7 +40,10 @@ function createElectronStub() {
     permissionHandlers: [],
     permissionCheckHandlers: [],
     devicePermissionHandlers: [],
-    toggledDevTools: 0
+    toggledDevTools: 0,
+    menus: [],
+    popups: 0,
+    clipboardWrites: []
   };
   let idCounter = 100;
 
@@ -155,7 +158,13 @@ function createElectronStub() {
       BrowserWindow,
       WebContentsView,
       Tray,
-      Menu: { buildFromTemplate: (template) => ({ template }) },
+      Menu: {
+        buildFromTemplate: (template) => {
+          calls.menus.push(template);
+          return { popup: () => { calls.popups += 1; } };
+        }
+      },
+      clipboard: { writeText: (text) => { calls.clipboardWrites.push(text); } },
       ipcMain: { handle: (channel, handler) => calls.ipc.set(channel, handler) },
       dialog: {
         showErrorBox: (title, content) => calls.errorBoxes.push({ title, content }),
@@ -270,6 +279,48 @@ test('main.js 装配层：启动、IPC 校验、权限/导航策略、退出清�
     assert.deepStrictEqual(openVerdict, { action: 'deny' });
     const sameOriginOpen = view.webContents.windowOpenHandler({ url: `${server.url}/x` });
     assert.deepStrictEqual(sameOriginOpen, { action: 'deny' }, '弹窗一律 deny，同源改为应用内导航');
+
+    // ---- 右键菜单：编辑动作、状态摘要复制、危险链接仍被拦 ----
+    view.webContents.emit('context-menu', {}, { selectionText: '选中的文本', editFlags: { canCopy: true, canCut: true, canSelectAll: true } });
+    assert.strictEqual(stub.calls.popups, 1, '右键应弹出菜单');
+    const viewMenu = stub.calls.menus[stub.calls.menus.length - 1];
+    const labels = viewMenu.map((item) => item.label).filter(Boolean);
+    for (const expected of ['剪切', '复制', '全选', '复制页面地址', '重新加载页面', '刷新 DSH 视图', '复制状态摘要', '打开日志']) {
+      assert.ok(labels.includes(expected), `视图右键菜单缺少「${expected}」：${labels.join('/')}`);
+    }
+    // 点击"复制"应作用于该 webContents（显式调用，不依赖焦点）
+    let copied = 0;
+    view.webContents.copy = () => { copied += 1; };
+    viewMenu.find((item) => item.label === '复制').click();
+    assert.strictEqual(copied, 1, '「复制」应调用触发菜单的那个 webContents.copy()');
+    // "复制状态摘要"写入剪贴板
+    viewMenu.find((item) => item.label === '复制状态摘要').click();
+    const summary = stub.calls.clipboardWrites[stub.calls.clipboardWrites.length - 1];
+    assert.match(summary, /DSH Electron 状态摘要/);
+    assert.match(summary, /服务来源: reuse/);
+    assert.match(summary, new RegExp(server.url.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+
+    view.webContents.emit('context-menu', {}, { linkURL: 'file:///C:/Windows/system.ini', editFlags: {} });
+    const blockedMenu = stub.calls.menus[stub.calls.menus.length - 1];
+    const blockedLabels = blockedMenu.map((item) => item.label).filter(Boolean);
+    assert.ok(blockedLabels.some((l) => l.includes('已阻止打开该链接')), '危险协议应给出被阻止说明');
+    assert.ok(!blockedLabels.includes('在系统浏览器中打开链接'), '危险协议不得出现可打开条目');
+    assert.strictEqual(
+      blockedMenu.find((item) => (item.label || '').includes('已阻止')).enabled,
+      false,
+      '被阻止的条目必须不可点'
+    );
+
+    // 侧边栏右键菜单不应出现视图专属条目
+    win.webContents.emit('context-menu', {}, { selectionText: '日志', editFlags: { canCopy: true } });
+    const sidebarLabels = stub.calls.menus[stub.calls.menus.length - 1].map((item) => item.label).filter(Boolean);
+    assert.ok(sidebarLabels.includes('复制'));
+    assert.ok(!sidebarLabels.includes('刷新 DSH 视图'));
+    assert.ok(!sidebarLabels.includes('开发者工具（F12）'));
+
+    // F12 开关 DevTools
+    view.webContents.emit('before-input-event', {}, { type: 'keyDown', key: 'F12' });
+    assert.strictEqual(stub.calls.toggledDevTools, 1);
 
     // ---- 视图状态机：did-finish-load 后进入 ready ----
     view.webContents.emit('did-finish-load');
