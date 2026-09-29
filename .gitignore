@@ -1,0 +1,7 @@
+node_modules/
+.npm-cache/
+.electron-cache/
+.user-data/
+load-status.log
+dist/
+out/
