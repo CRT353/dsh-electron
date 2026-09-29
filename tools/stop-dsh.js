@@ -1,6 +1,6 @@
 'use strict';
 /**
- * 安全的"停止 DSH 服务"工具（替代 dsh_off.ps1 里"杀掉所有 node.exe"的做法）
+ * 安全的"停止 DSH 服务"工具（替代已归档的 dsh_off.ps1 里"杀掉所有 node.exe"的做法）
  *
  * 只终止"确实是 DSH 服务"的进程：
  *   1. 解析监听 DSH 端口的进程（netstat/lsof/ss + 命令行读取）；
