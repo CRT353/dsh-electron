@@ -404,10 +404,13 @@ function createWindow() {
     if (!win || win.isDestroyed()) return;
 
     const sm = service ? service.snapshot() : { mode: 'unknown' };
+    const ownershipLine = sm.mode === 'managed'
+      ? `当前服务由本程序管理${sm.listenerPid ? `（监听进程 pid ${sm.listenerPid}）` : ''}，退出时会一并清理。`
+      : (sm.mode === 'orphan'
+        ? '当前服务处于"归属漂移"状态（本程序记录的 pid 已退出，端口仍被疑似 dsh 的进程服务）：退出时会先做身份校验再尝试清理。'
+        : '当前服务不是本程序拉起的，退出时不会被终止。');
     const detail = [
-      sm.mode === 'managed'
-        ? `当前服务由本程序管理${sm.listenerPid ? `（pid ${sm.listenerPid}）` : ''}。`
-        : '当前服务不是本程序拉起的，退出时不会被终止。',
+      ownershipLine,
       '最小化到托盘：程序与 DSH 服务继续在后台运行。',
       '关闭并退出：只清理本程序拉起的 DSH 服务。'
     ].join('\n');
