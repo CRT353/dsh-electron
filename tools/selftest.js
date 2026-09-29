@@ -97,50 +97,86 @@ async function main() {
     console.log('  提示：若这里是 FAIL，请在该终端直接运行本脚本；受限沙箱会禁止子进程管道。');
   }
 
-  console.log(`\n=== 3. 用假服务走完整生命周期（端口 ${port}）===`);
-  const plan = buildSpawnPlan(`${process.execPath} "${path.join(__dirname, '..', 'tests', 'dummy-server.js')}"`, {});
-  const manager = new ServiceManager({
-    config: {
-      url: `http://127.0.0.1:${port}`,
-      host: '127.0.0.1',
-      port,
-      startCommand: args.startCommand,
-      spawnPlan: plan,
-      env: { ...process.env, PORT: String(port) },
-      stdio: ['ignore', 'pipe', 'pipe'],
-      readyTimeoutMs: 20000,
-      killTimeoutMs: 8000,
-      readyPollMs: 200
-    },
-    logger,
-    exec,
-    probeHealth: () => probeDsh({ url: `http://127.0.0.1:${port}`, timeoutMs: 1500, requireHtml: false }),
-    findListenerPid: (p, h) => findListenerPid(p, { host: h, exec })
-  });
+  // 步骤 3/4 共用：走完"拉起 → 认领 → 清理 → 端口释放"并记录结果
+  async function lifecycleCheck(prefix, targetPort, spawnPlan) {
+    const manager = new ServiceManager({
+      config: {
+        url: `http://127.0.0.1:${targetPort}`,
+        host: '127.0.0.1',
+        port: targetPort,
+        startCommand: args.startCommand,
+        spawnPlan,
+        env: { ...process.env, PORT: String(targetPort) },
+        stdio: ['ignore', 'pipe', 'pipe'],
+        readyTimeoutMs: 20000,
+        killTimeoutMs: 8000,
+        readyPollMs: 200,
+        verify: { pattern: /dsh|dummy-server/i, allowUnverified: false }
+      },
+      logger,
+      exec,
+      probeHealth: () => probeDsh({ url: `http://127.0.0.1:${targetPort}`, timeoutMs: 1500, requireHtml: false }),
+      findListenerPid: (p, h) => findListenerPid(p, { host: h, exec })
+    });
 
-  let snapshot = null;
-  try {
-    snapshot = await manager.ensure();
-    record('服务拉起并就绪', snapshot.mode === 'managed', `mode=${snapshot.mode} spawnCount=${snapshot.spawnCount}`);
-    record('端口进入监听状态', await isPortInUse(port, '127.0.0.1'), `127.0.0.1:${port}`);
-    record('权威身份取自真实监听 pid', Boolean(snapshot.listenerPid), `listenerPid=${snapshot.listenerPid} wrapperPid=${snapshot.wrapperPid}`);
-    record('监听进程身份经命令行校验', snapshot.listenerVerified === true,
-      snapshot.listenerVerified ? '已校验' : '仅观察认定（netstat/ps 不可用时属预期）');
+    let snapshot = null;
+    try {
+      snapshot = await manager.ensure();
+      record(`${prefix}：服务拉起并就绪`, snapshot.mode === 'managed', `mode=${snapshot.mode} spawnCount=${snapshot.spawnCount}`);
+      record(`${prefix}：端口进入监听状态`, await isPortInUse(targetPort, '127.0.0.1'), `127.0.0.1:${targetPort}`);
+      record(
+        `${prefix}：权威身份＝真实监听 pid`,
+        Boolean(snapshot.listenerPid),
+        `listenerPid=${snapshot.listenerPid} wrapperPid=${snapshot.wrapperPid}`
+      );
+      record(
+        `${prefix}：身份经命令行校验`,
+        snapshot.listenerVerified === true,
+        snapshot.listenerVerified ? '已校验' : '仅观察认定（netstat/ps 不可用时属预期）'
+      );
 
-    const kill = await manager.killManaged('selftest');
-    record('清理完成', kill.ok === true, kill.ok ? kill.steps.join(' → ') : `${kill.reason || ''} ${JSON.stringify(kill.steps || [])}`);
-    record('清理后端口释放', (await isPortInUse(port, '127.0.0.1', 800)) === false, `127.0.0.1:${port}`);
-    if (snapshot.listenerPid) {
-      await new Promise((r) => setTimeout(r, 200));
-      record('清理后进程退出', isPidAlive(snapshot.listenerPid) === false, `pid=${snapshot.listenerPid}`);
+      const kill = await manager.killManaged('selftest');
+      record(`${prefix}：清理完成`, kill.ok === true, kill.ok ? kill.steps.join(' → ') : `${kill.reason || ''} ${JSON.stringify(kill.steps || [])}`);
+      record(`${prefix}：清理后端口释放`, (await isPortInUse(targetPort, '127.0.0.1', 800)) === false, `127.0.0.1:${targetPort}`);
+      await new Promise((r) => setTimeout(r, 250));
+      if (snapshot.listenerPid) record(`${prefix}：真实服务进程已退出`, isPidAlive(snapshot.listenerPid) === false, `pid=${snapshot.listenerPid}`);
+      if (snapshot.wrapperPid && snapshot.wrapperPid !== snapshot.listenerPid) {
+        record(`${prefix}：包装进程已退出`, isPidAlive(snapshot.wrapperPid) === false, `wrapper pid=${snapshot.wrapperPid}`);
+      }
+      record(
+        `${prefix}：主动清理不产生假故障`,
+        manager.snapshot().lastError === null,
+        manager.snapshot().lastError || '无异常记录'
+      );
+    } catch (err) {
+      record(`${prefix}：生命周期自检异常`, false, err && err.message ? err.message : String(err));
+    } finally {
+      try { await manager.shutdown({ timeoutMs: 4000 }); } catch (_) { /* 忽略 */ }
+      const leftover = await waitForPortReleased(targetPort, '127.0.0.1', { timeoutMs: 3000, intervalMs: 200 });
+      if (!leftover) console.log(`  警告：端口 ${targetPort} 仍被占用，可能有残留测试进程，请手动检查。`);
     }
-  } catch (err) {
-    record('生命周期自检异常', false, err && err.message ? err.message : String(err));
-  } finally {
-    // 兜底：确保不留下测试进程
-    try { await manager.shutdown({ timeoutMs: 4000 }); } catch (_) { /* 忽略 */ }
-    const leftover = await waitForPortReleased(port, '127.0.0.1', { timeoutMs: 3000, intervalMs: 200 });
-    if (!leftover) console.log(`  警告：端口 ${port} 仍被占用，可能有残留测试进程，请手动检查。`);
+  }
+
+  console.log(`\n=== 3. 用假服务走完整生命周期（直接启动，端口 ${port}）===`);
+  const dummy = path.join(__dirname, '..', 'tests', 'dummy-server.js');
+  await lifecycleCheck('直接启动', port, buildSpawnPlan(`${process.execPath} "${dummy}"`, {}));
+
+  // 旧版最致命的场景：Windows 上 dsh 是 .cmd 垫片，真正拉起服务的是 cmd.exe 包装进程，
+  // 真服务是它的子进程 —— 当时 kill 包装进程 pid 永远杀不掉服务。这里显式复现该条件。
+  if (process.platform === 'win32') {
+    const wrapperPort = await freePort();
+    const comspec = process.env.ComSpec || 'cmd.exe';
+    console.log(`\n=== 4. 复现旧版失败条件：cmd 包装进程 pid ≠ 真实服务 pid（端口 ${wrapperPort}）===`);
+    await lifecycleCheck('cmd 包装', wrapperPort, {
+      file: comspec,
+      args: ['/d', '/s', '/c', `"${process.execPath}" "${dummy}"`],
+      useShell: false,
+      launcher: 'cmd',
+      resolved: true,
+      display: `${comspec} /d /s /c node dummy-server.js`
+    });
+  } else {
+    console.log('\n=== 4. 跳过：非 Windows 平台没有 cmd 包装进程场景 ===');
   }
 
   console.log('\n=== 自检结论 ===');

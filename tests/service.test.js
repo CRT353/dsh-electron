@@ -96,9 +96,15 @@ test('托管生命周期：拉起 → 认领真实监听 pid → 清理 → 端�
   assert.strictEqual(killResult.ok, true, `清理应成功：${JSON.stringify(killResult)}`);
   assert.strictEqual(killResult.released, true);
   assert.strictEqual(await isPortInUse(port, '127.0.0.1', 500), false, '清理后端口必须释放');
-  await sleep(120);
+  await sleep(200);
   assert.strictEqual(isPidAlive(children[0].pid), false, '清理后服务进程必须退出');
   assert.strictEqual(manager.snapshot().mode, 'stopped');
+  // 主动清理不应被记成"服务异常退出"（Windows 上 process.kill 会把退出码报成 1）
+  assert.ok(
+    !logger.lines.some((l) => /异常退出/.test(l)),
+    `主动清理不得产生故障日志：${logger.lines.filter((l) => /异常退出/.test(l)).join(' | ')}`
+  );
+  assert.strictEqual(manager.snapshot().lastError, null, '主动清理后不应留下"当前问题"');
 });
 
 test('并发 ensure() 只拉起一个实例（旧版本会重复拉起抢端口）', async () => {
