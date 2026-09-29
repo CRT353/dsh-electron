@@ -82,3 +82,12 @@ test('非法 DSH_KILL_PATTERN 回退到默认 dsh 规则', () => {
   const config = loadConfig({ DSH_KILL_PATTERN: '([unclosed' });
   assert.ok(config.killPattern.test('node .../dsh web --no-open'));
 });
+
+test('视图会话默认独立隔离，可用环境变量退回默认会话', () => {
+  assert.strictEqual(loadConfig({}).viewPartition, 'persist:dsh-view', '默认应与其它 Electron 应用隔离');
+  assert.strictEqual(loadConfig({ DSH_VIEW_PARTITION: 'default' }).viewPartition, '');
+  assert.strictEqual(loadConfig({ DSH_VIEW_PARTITION: 'off' }).viewPartition, '');
+  assert.strictEqual(loadConfig({ DSH_VIEW_PARTITION: 'none' }).viewPartition, '');
+  assert.strictEqual(loadConfig({ DSH_VIEW_PARTITION: '  ' }).viewPartition, '');
+  assert.strictEqual(loadConfig({ DSH_VIEW_PARTITION: 'persist:custom' }).viewPartition, 'persist:custom');
+});

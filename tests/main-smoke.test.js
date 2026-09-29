@@ -221,6 +221,13 @@ test('main.js 装配层：启动、IPC 校验、权限/导航策略、退出清�
     assert.strictEqual(win.options.webPreferences.allowRunningInsecureContent, false);
     assert.ok(win.options.webPreferences.preload.endsWith('preload.js'));
     assert.strictEqual(stub.calls.views.length >= 1, true, '应挂载 DSH 视图');
+    // 侧边栏走默认会话；DSH 视图走独立会话分区（cookie/localStorage/缓存与其它 Electron 应用隔离）
+    assert.strictEqual(win.options.webPreferences.partition, undefined, '侧边栏使用默认会话');
+    assert.strictEqual(
+      stub.calls.views.find((v) => v.webContents && v.webContents.label === 'dsh-view').options.webPreferences.partition,
+      'persist:dsh-view',
+      'DSH 视图默认使用独立会话分区'
+    );
     assert.strictEqual(stub.calls.trays.length, 1, '应创建托盘');
 
     // ---- IPC：通道齐全 + sender 校验 ----

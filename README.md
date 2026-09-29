@@ -3,7 +3,16 @@
 把 DSH Web GUI（默认 `http://127.0.0.1:3080`）装进独立 Electron 窗口，并附带
 **服务生命周期管理、归属校验、状态监测侧边栏与安全加固**。
 
-当前版本 **v1.2.1**（v1.1.0 = 生命周期与安全加固版；v1.0.0 原始实现见快照 `d09f279`，标签 `v1.0.0-snapshot`）。
+当前版本 **v1.3.0**（v1.1.0 = 生命周期与安全加固版；v1.0.0 原始实现见快照 `d09f279`，标签 `v1.0.0-snapshot`）。
+
+**v1.3.0 变化**
+
+- **DSH 视图默认使用独立会话分区**（`persist:dsh-view`）：Cookie / localStorage / 缓存与其它 Electron 应用隔离；
+  要回到旧行为（复用 Electron 默认会话）设 `DSH_VIEW_PARTITION=default`。
+- **"接管并重启"按钮改为常驻显示**（灰显 + 悬停原因），不再只在需要时才出现（避免找不到）。
+- **新增安全停止工具** `npm stop`（`tools/stop-dsh.js`）：只终止"经身份校验确认是 DSH"的进程，
+  用于替代 `dsh_off.ps1` 里"杀掉所有 node.exe"的做法（见第十节末）。
+- 打包落地：`npm install` + `npm run dist` 产出 Windows 安装包与免安装版。
 
 **v1.2.1 修复**：主动清理服务时不再把进程退出误记为"服务异常退出"（Windows 上 `process.kill` 会把退出码报成 1，
 旧实现会因此留下一句假的"当前问题"）；自检脚本新增"**cmd 包装进程场景**"，专门复现旧版 `taskkill` 杀不掉真服务
@@ -81,14 +90,15 @@ DevTools、服务操作、"复制状态摘要"），不想记快捷键时可以�
 | 终止进程 | 终止任何 pid 前必须通过证据校验（见上表 #4）；`taskkill` 只对通过校验的 pid 执行；拒绝时打印补救方式 | `lib/procs.js#decideKill` |
 | 启动命令 | 永不使用 `shell:true`（避免命令注入面与不可回收的包装进程）；命令先解析成真实可执行文件与参数数组 | `lib/procs.js#buildSpawnPlan` |
 | 日志 | 落盘前脱敏（查询串凭据、Bearer、URL 凭据、40+ 位 token）；可用 `DSH_LOG_REDACT_TOKENS=0` 关闭 | `lib/log.js#redact` |
+| 会话隔离 | DSH 视图默认使用独立会话分区 `persist:dsh-view`（cookie/localStorage/缓存与其它 Electron 应用互不影响）；侧边栏走默认会话 | `lib/config.js#viewPartition`、`main.js` |
 | 单实例 | 防止多实例争抢端口/互相清理 | `main.js` |
 
 已知取舍（有意为之，记录在案）：
 
-- 权限白名单里的 `clipboard-sanitized-write` 是为了让 DSH 页面上的"复制"按钮可用；如需更严可设置
+- 权限白名单里的 `clipboard-sanitized-write` 是为了让 DSH 页面上的"复制"按钮可用（已确认保留）；如需更严可设
   `DSH_ALLOW_PERMISSIONS` 覆盖，或直接把该权限从 `lib/security.js` 的 `DEFAULT_ALLOWED_PERMISSIONS` 里删掉。
-- 视图默认沿用 Electron 默认会话（保留你原来的本地登录态）。如需与系统其它 Electron 应用隔离，
-  设置 `DSH_VIEW_PARTITION=persist:dsh-view` 使用独立分区（代价：可能需要重新登录/丢失页面本地状态）。
+- 视图默认已改为独立会话分区。代价：首次切换后 DSH 页面的本地状态（登录态/主题等）不再与默认会话共享，
+  可能需要重新设置一次；要回到旧行为设 `DSH_VIEW_PARTITION=default`。
 - `DSH_ALLOW_UNVERIFIED_KILL=1` 会让清理在拿不到进程命令行证据时也放行强杀，属降低安全等级的开关，默认关闭。
 
 ---
@@ -104,9 +114,11 @@ DevTools、服务操作、"复制状态摘要"），不想记快捷键时可以�
 ```powershell
 npm install                    # 首次
 npm start                      # 启动独立窗口
-npm test                       # 53 个自动化用例
+npm test                       # 61 个自动化用例
 npm run selftest               # 真实环境自检（建议在普通终端运行）
 npm run selftest -- --inspect 3080   # 只读查看 3080 被谁监听（不会终止任何进程）
+npm stop                       # 安全停止 DSH 服务（带身份校验，不会误杀其它 node 进程）
+npm run stop:dry               # 只看会终止谁，不动任何进程
 npm run gen-icon               # 重新生成 icon.png / build/icon.ico
 npm run dist                   # 打包安装包（需 electron-builder）
 ```
@@ -133,7 +145,7 @@ npm run dist                   # 打包安装包（需 electron-builder）
 | `DSH_ALLOW_UNVERIFIED_KILL` | `0` | `1` = 拿不到命令行证据也允许强杀（降低安全性） |
 | `DSH_EXTERNAL_SCHEMES` | `http,https` | 允许交给系统浏览器的协议 |
 | `DSH_ALLOW_PERMISSIONS` | 空 | 额外放行的渲染层权限（逗号分隔） |
-| `DSH_VIEW_PARTITION` | 空 | 设置后视图使用独立会话分区（如 `persist:dsh-view`） |
+| `DSH_VIEW_PARTITION` | `persist:dsh-view` | 视图的会话分区；设 `default`/`off` 退回 Electron 默认会话 |
 | `DSH_DEVTOOLS` | `1` | `1` = 视图内按 F12 可开 DevTools |
 | `DSH_VIEW_RETRY_INTERVAL` / `DSH_VIEW_MAX_ATTEMPTS` | `5000` / `5` | 视图自愈重试间隔与上限 |
 | `DSH_LOG_FILE` | `<项目目录>/load-status.log` | 日志路径 |
@@ -195,19 +207,38 @@ npm run dist                    # 输出到 dist/：Windows NSIS 安装包 + 免
 | 启动报"DSH_URL 指向非本机地址" | 安全默认值。确需远端请设 `DSH_ALLOW_REMOTE=1` |
 | 右侧一直停在占位页，但端口明明有响应 | 默认要求响应为 `text/html` 才认作 DSH（防止把陌生服务当 DSH 加载进外壳）。若你的入口返回其它类型，设 `DSH_HEALTH_REQUIRE_HTML=0` |
 
-### 从旧版（v1.0.0 / v1.1.0）切换到 v1.2.0（重要）
+### 从旧版（v1.0.0 / v1.1.0）切换到当前版本（重要）
 
 当前若还在跑旧实例，它的清理逻辑会"杀掉任何监听 3080 的进程"，因此：
 
 1. **推荐**：先在旧实例上完全退出（窗口 × → "关闭并退出"，或托盘菜单"退出"）。
-   旧实例会终止它此前拉起的那个 dsh（当前 GUI 页面会断开，属正常），随后双击快捷方式启动 v1.1.0，
+   旧实例会终止它此前拉起的那个 dsh（当前 GUI 页面会断开，属正常），随后双击快捷方式启动新版，
    新版发现端口空闲会自己拉起新服务，页面恢复。
-2. **不想中断当前会话**：直接启动 v1.1.0（新版会把它判定为 `reuse`，不会动它），
+2. **不想中断当前会话**：直接启动新版（新版会判定为 `reuse`，不会动它），
    等旧实例退出后再在新版里点"重启服务"。
 3. ⚠ 不要在新版已经拉起服务后，再让**旧版**执行"关闭并退出"——旧版会把新版的服务一起杀掉。
 
 回滚：本目录已是 git 仓库，`git checkout d09f279 -- .` 可恢复 v1.0.0 的代码
 （快照提交 `d09f279`，标签 `v1.0.0-snapshot`）。
+
+### 与旧的 `dsh_on.ps1` / `dsh_off.ps1` 的关系（建议统一）
+
+工作区根目录还有两个旧快捷方式，指向两个 PowerShell 脚本：
+
+| 旧脚本 | 它做什么 | 与本程序的关系 |
+|---|---|---|
+| `dsh_on.ps1` | 在**可见终端前台**运行 `dsh web --host 127.0.0.1 --port 3080`，并另起一个隐藏进程等端口就绪后**打开系统浏览器** | 这样启动的服务属于"外部服务"：本程序会显示为 `reuse`（只复用不管理），"重启服务"按钮会灰掉——**这就是"接管并重启"按钮唯一会亮起来的场景** |
+| `dsh_off.ps1` | **终止机器上所有 `node.exe`** | 风险较高：会连带杀掉与本项目无关的 Node 进程，也会杀掉本程序管理的服务（之后侧边栏会显示 `stopped`，可重启）。另外它有 `Read-Host` 交互，不适合脚本化调用 |
+
+建议（二选一，不必同时用两套启停方式）：
+
+1. **统一到本程序**：日常启动就用 `dsh_electron.lnk`，需要停服务时用 `npm stop`
+   （只终止经身份校验确认是 DSH 的那个进程，不会误伤别的 node），并把 `dsh_off.lnk` 指到 `npm stop`。
+2. **保留旧方式**：那就先
+   `dsh_on` 再启动本程序，然后在侧边栏点一次"**接管并重启**"，把服务纳入管理；
+   之后就能用侧边栏/托盘/右键菜单统一控制了。**不要**再用 `dsh_off.ps1`，改用 `npm stop`。
+
+无论选哪种，都不建议让两套机制同时"拥有"同一个服务——否则一边清理、另一边还在原地，只会制造 `orphan`/`takeover`。
 
 ## 十一、架构
 
@@ -235,8 +266,9 @@ npm start
 | `renderer/index.html` `sidebar.css` `sidebar.js` | 侧边栏 UI（严格 CSP，全部 `textContent` 渲染，告警/详情文本可选中复制） |
 | `renderer/view-placeholder.html` | 服务未就绪时的占位页 |
 | `lib/*.js` | 可单测的业务逻辑（含 `context-menu.js` 右键菜单模板，见上） |
-| `tests/*.test.js` | 53 个自动化用例；`tests/dummy-server.js` 为假 DSH 服务 |
+| `tests/*.test.js` | 61 个自动化用例；`tests/dummy-server.js` 为假 DSH 服务 |
 | `tools/selftest.js` | 真实环境全链路自检 / 只读端口检查 |
+| `tools/stop-dsh.js` | 安全停止工具（`npm stop`）：带身份校验，不会误杀其它 node 进程 |
 | `tools/gen-icon.js` | 纯 Node 生成 `icon.png` 与 `build/icon.ico` |
 | `build/icon.ico` `build/icon.png` | 打包资源（由 `gen-icon` 生成） |
 | `load-status.log` | 运行日志（自动轮转，凭据脱敏） |

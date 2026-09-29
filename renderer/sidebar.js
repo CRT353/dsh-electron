@@ -146,12 +146,13 @@
       ? '重启本程序管理的 DSH 服务'
       : (s.mode === 'reuse' ? 'DSH 由外部启动；如需本程序管理，请用"接管并重启"' : '当前状态不可重启');
 
-    if (s.forceRestartable) {
-      btnAdopt.classList.remove('hidden');
-      btnAdopt.title = '终止当前监听端口的外部 dsh 进程，并由本程序接管拉起（会先终止该进程）';
-    } else {
-      btnAdopt.classList.add('hidden');
-    }
+    // 接管按钮始终可见（灰显比隐藏更好找），只在"端口被外部 dsh 占用"时可用
+    btnAdopt.disabled = !s.forceRestartable;
+    btnAdopt.title = s.forceRestartable
+      ? '终止当前监听端口的外部 dsh 进程，并由本程序接管拉起（会先终止该进程）'
+      : (s.managed
+        ? '当前服务已由本程序管理，无需接管'
+        : '仅当端口被"外部启动的 dsh"占用时可用（例如你用 dsh_on.ps1 手动启动的服务）');
   }
 
   function showNotice(text, isError) {
