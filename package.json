@@ -43,7 +43,8 @@
       "target": [
         "nsis",
         "portable"
-      ]
+      ],
+      "signAndEditExecutable": false
     },
     "nsis": {
       "oneClick": false,
@@ -64,7 +65,10 @@
       "target": [
         "AppImage"
       ]
-    }
+    },
+    "electronDist": "node_modules/electron/dist",
+    "electronVersion": "33.4.11",
+    "npmRebuild": false
   },
   "author": "DSH Electron",
   "private": true

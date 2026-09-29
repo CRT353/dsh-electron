@@ -7,3 +7,6 @@ load-status.log.1
 dist/
 out/
 *.tmp
+
+.eb-cache/
+build-out.txt

@@ -192,8 +192,38 @@ npm run selftest -- --inspect 3080
 ```powershell
 npm install                     # 同步 devDependencies（含 electron-builder）
 npm run gen-icon                # 可选：重新生成图标
-npm run dist                    # 输出到 dist/：Windows NSIS 安装包 + 免安装版
+npm run dist                    # 输出 dist/：NSIS 安装包 + 免安装单文件版
 ```
+
+**已实测产物**（v1.3.0，Windows x64）
+
+| 文件 | 用途 |
+|---|---|
+| `dist\DSH Desktop Setup 1.3.0.exe`（约 78 MB） | NSIS 安装包：可选安装目录、建桌面快捷方式、带卸载器 |
+| `dist\DSH Desktop 1.3.0.exe`（约 78 MB） | 免安装单文件版，双击即用 |
+| `dist\win-unpacked\` | 解包后的应用目录（`resources\app.asar` 内只有 16 个应用文件，无 node_modules 冗余） |
+
+如果构建时下载卡住（国内网络访问 GitHub 受限），先设置镜像再构建：
+
+```powershell
+$env:ELECTRON_BUILDER_BINARIES_MIRROR = 'https://registry.npmmirror.com/-/binary/electron-builder-binaries/'
+$env:ELECTRON_BUILDER_CACHE = "$PWD\.eb-cache"   # 把构建缓存放进项目目录（已 gitignore）
+npm run dist
+```
+
+构建配置里有两处针对本机的必要设置，改动前请先看原因：
+
+- `electronDist: node_modules/electron/dist` + `electronVersion`：直接复用已安装的 Electron 运行时，
+  不再从 GitHub 重新下载一份；`npmRebuild: false`：本项目**零运行时依赖**，无需重建原生模块。
+- `win.signAndEditExecutable: false`：Windows 上解包 `winCodeSign` 需要"创建符号链接"权限
+  （管理员或开发者模式），否则构建会卡在 `Cannot create symbolic link`。
+  代价：**exe 的图标与版本信息仍是 Electron 默认值**（资源管理器里看是 Electron 图标），
+  但窗口/任务栏/托盘图标已由 `icon.png` 提供，功能不受影响。
+  想要 exe 也带自己的图标：开启 Windows 开发者模式（或管理员终端）后把该项改回 `true` 重新构建。
+
+> 打包后的应用 `productName` 是 `DSH Desktop`，与开发运行（`npm start`）的系统标识不同：
+> 两者**可以同时启动**（单实例锁按应用标识区分）。但它们共用同一个 DSH 端口，
+> 建议只保留一个在跑，否则第二个会以 `reuse`（外部服务）身份复用端口——不冲突，但状态归属会看着别扭。
 
 ## 十、故障排查
 

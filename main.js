@@ -439,6 +439,7 @@ function createWindow() {
     width: 1440,
     height: 900,
     title: 'DSH',
+    icon: path.join(__dirname, 'icon.png'), // 任务栏/窗口图标（打包后 exe 图标未改写时也一致）
     autoHideMenuBar: true,
     backgroundColor: '#16181d',
     webPreferences: {
