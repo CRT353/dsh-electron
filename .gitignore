@@ -3,5 +3,7 @@ node_modules/
 .electron-cache/
 .user-data/
 load-status.log
+load-status.log.1
 dist/
 out/
+*.tmp

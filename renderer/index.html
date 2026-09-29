@@ -2,7 +2,10 @@
 <html lang="zh-CN">
 <head>
   <meta charset="UTF-8" />
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self'" />
+  <meta
+    http-equiv="Content-Security-Policy"
+    content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
+  />
   <title>DSH</title>
   <link rel="stylesheet" href="sidebar.css" />
 </head>
@@ -28,6 +31,11 @@
         <span class="status-label">DSH 服务</span>
         <span class="status-value" id="dsh-text">检测中…</span>
       </div>
+      <div class="status-row">
+        <span class="dot" id="view-dot"></span>
+        <span class="status-label">视图</span>
+        <span class="status-value" id="view-text">待加载</span>
+      </div>
     </div>
 
     <div id="alert-box" class="alert hidden">
@@ -35,16 +43,24 @@
       <div class="alert-body" id="alert-text"></div>
     </div>
 
+    <div id="notice-box" class="notice hidden">
+      <div class="alert-title">操作结果</div>
+      <div class="alert-body" id="notice-text"></div>
+    </div>
+
     <div class="section-title">详情</div>
     <div class="detail-list">
       <div class="detail-row"><span class="detail-label">地址</span><span class="detail-value" id="meta-url">-</span></div>
       <div class="detail-row"><span class="detail-label">服务来源</span><span class="detail-value" id="meta-source">-</span></div>
+      <div class="detail-row"><span class="detail-label">监听进程</span><span class="detail-value" id="meta-pid">-</span></div>
       <div class="detail-row"><span class="detail-label">最近检测</span><span class="detail-value" id="meta-time">-</span></div>
     </div>
 
     <div class="actions">
       <button id="btn-reload" class="btn">刷新 DSH 视图</button>
-      <button id="btn-restart" class="btn btn-warn" disabled title="仅当 DSH 由本程序拉起时可重启">重启服务</button>
+      <button id="btn-restart" class="btn btn-warn" disabled>重启服务</button>
+      <button id="btn-adopt" class="btn btn-danger hidden">接管并重启</button>
+      <button id="btn-log" class="btn btn-ghost">打开日志</button>
     </div>
 
     <div class="footer">状态每 5 秒自动检测</div>

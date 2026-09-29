@@ -1,16 +1,67 @@
 {
   "name": "dsh-electron",
-  "version": "1.0.0",
-  "description": "DSH Web GUI 的独立 Electron 窗口封装",
+  "version": "1.1.0",
+  "description": "DSH Web GUI 的独立 Electron 窗口封装（含服务生命周期管理、归属校验与安全加固）",
   "main": "main.js",
   "scripts": {
-    "start": "electron ."
+    "start": "electron .",
+    "test": "node --test --test-isolation=none \"tests/*.test.js\"",
+    "test:watch": "node --test --test-isolation=none --watch \"tests/*.test.js\"",
+    "selftest": "node tools/selftest.js",
+    "gen-icon": "node tools/gen-icon.js",
+    "build": "electron-builder --dir",
+    "dist": "electron-builder"
   },
   "license": "MIT",
   "devDependencies": {
-    "electron": "^33.0.0"
+    "electron": "^33.0.0",
+    "electron-builder": "^25.1.8"
   },
   "allowScripts": {
     "electron@33.4.11": true
+  },
+  "build": {
+    "appId": "local.dsh.electron",
+    "productName": "DSH Desktop",
+    "asar": true,
+    "files": [
+      "main.js",
+      "preload.js",
+      "lib/**/*",
+      "renderer/**/*",
+      "icon.png",
+      "package.json"
+    ],
+    "directories": {
+      "output": "dist",
+      "buildResources": "build"
+    },
+    "win": {
+      "icon": "build/icon.ico",
+      "target": [
+        "nsis",
+        "portable"
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true
+    },
+    "mac": {
+      "icon": "build/icon.png",
+      "category": "public.app-category.developer-tools",
+      "target": [
+        "dmg"
+      ]
+    },
+    "linux": {
+      "icon": "build/icon.png",
+      "category": "Development",
+      "target": [
+        "AppImage"
+      ]
+    }
   }
 }

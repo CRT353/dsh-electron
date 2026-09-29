@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta
+    http-equiv="Content-Security-Policy"
+    content="default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
+  />
+  <title>DSH 启动中</title>
+  <style>
+    html, body {
+      height: 100%;
+      margin: 0;
+      background: #16181d;
+      color: #8b90a0;
+      font-family: "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .box { text-align: center; }
+    .icon { font-size: 34px; color: #4f8cff; margin-bottom: 14px; }
+    .title { font-size: 15px; color: #c6cad6; margin-bottom: 6px; }
+    .hint { font-size: 12px; color: #6b7180; line-height: 1.7; }
+    .bar { width: 160px; height: 3px; background: #262a33; border-radius: 2px; margin: 16px auto 0; overflow: hidden; }
+    .bar span { display: block; width: 40%; height: 100%; background: #4f8cff; animation: slide 1.5s ease-in-out infinite; }
+    @keyframes slide { 0% { transform: translateX(-100%); } 100% { transform: translateX(250%); } }
+  </style>
+</head>
+<body>
+  <div class="box">
+    <div class="icon">◈</div>
+    <div class="title">DSH 服务尚未就绪</div>
+    <div class="hint">
+      正在拉起或等待本地服务（127.0.0.1:3080）。<br />
+      就绪后本页面会自动切换到 DSH 界面；<br />
+      左侧侧边栏可查看状态、日志与重启操作。
+    </div>
+    <div class="bar"><span></span></div>
+  </div>
+</body>
+</html>

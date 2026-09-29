@@ -1,242 +1,283 @@
+'use strict';
 // ============================================================
-// DSH Electron 封装（增强版）
-//  1. 打开程序时自动拉起 DSH 服务（若 3080 未在运行）
-//  2. 关闭窗口时自动关闭"由本程序拉起的" DSH 进程
-//     （若 DSH 是外部启动的，则复用且不杀，避免误伤）
-//  3. 左侧自绘侧边栏：监测外网与 DSH 服务状态，异常时提示
-//  布局：宿主窗口加载 renderer/index.html（侧边栏），
-//        右侧用 WebContentsView 加载 DSH 网页
+// DSH Electron 外壳（v1.1.0 加固版）
+//
+// 职责：
+//   1. 单实例运行；第二个实例只负责唤醒已有窗口。
+//   2. DSH 服务生命周期：复用 / 拉起 / 等待就绪 / 重启 / 退出清理。
+//      权威身份是"监听 DSH 端口的真实进程 pid"，不是 spawn 返回的包装进程。
+//   3. 左侧侧边栏：网络 + DSH 服务 + 视图状态，异常提示，一键刷新/重启/接管。
+//   4. 系统托盘 + 关闭三选 + 状态翻转通知。
+//   5. 安全管控：导航白名单、外链 scheme 白名单、权限默认拒绝、
+//      IPC sender 校验、CSP、日志脱敏、远端目标默认拒绝。
+//
+// 业务逻辑都在 lib/ 下（可单测），本文件只做 Electron 装配。
 // ============================================================
-const { app, BrowserWindow, WebContentsView, shell, ipcMain, Tray, Menu, dialog, nativeImage } = require('electron');
-const { spawn, execFileSync } = require('child_process');
-const fs = require('fs');
+
+const { app, BrowserWindow, WebContentsView, shell, ipcMain, Tray, Menu, dialog, nativeImage, session } = require('electron');
 const os = require('os');
 const path = require('path');
+const { pathToFileURL } = require('url');
 
-// ---------- 配置 ----------
-const DSH_URL = process.env.DSH_URL || 'http://127.0.0.1:3080'; // DSH 服务地址
-// 拉起命令：--no-open 禁止 dsh web 自行打开默认浏览器（本程序自己就是"浏览器"）
-const DSH_START_COMMAND = process.env.DSH_START_COMMAND || 'dsh web --no-open';
-const SIDEBAR_WIDTH = 240;        // 侧边栏宽度（px）
-const POLL_INTERVAL = 5000;       // 状态轮询间隔（ms）
-const CHECK_TIMEOUT = 3000;       // 单次健康检查超时（ms）
-const START_WAIT_TIMEOUT = 60000; // 等待服务就绪的最长时间（ms）
+const { createLogger, safeUrl } = require('./lib/log');
+const { createExec } = require('./lib/exec');
+const { findListenerPid } = require('./lib/procs');
+const { probeDsh, probeInternet, FlapGuard, detectTransitions } = require('./lib/health');
+const { decideNavigation, decideOpenExternal, decidePermission, describePolicy } = require('./lib/security');
+const { ServiceManager } = require('./lib/service');
+const { loadConfig } = require('./lib/config');
+
+const config = loadConfig(process.env, { root: __dirname });
+const logger = createLogger({
+  file: config.logFile,
+  maxBytes: config.logMaxBytes,
+  maxMessage: config.logMaxMessage,
+  redactTokens: config.redactLogTokens
+});
+const exec = createExec();
+
+const SIDEBAR_URL = pathToFileURL(path.join(__dirname, 'renderer', 'index.html')).toString();
+const PLACEHOLDER_URL = pathToFileURL(path.join(__dirname, 'renderer', 'view-placeholder.html')).toString();
 
 // ---------- 运行时状态 ----------
-const state = {
-  serviceManaged: false, // 服务是否由本程序拉起（决定关闭时是否清理）
-  servicePid: null,      // 由本程序拉起的服务 PID
-  serviceProc: null,     // 由本程序拉起的子进程句柄
-  serviceExited: false,  // 本程序拉起的服务是否已退出（崩溃/被杀）
-  starting: false,       // 正在等待服务就绪
-  dshOnline: false,      // DSH 服务是否可达
-  internetOnline: false, // 外网是否可达
-  lastDshCheck: null,
-  lastNetCheck: null,
-  quitting: false,
-};
 let win = null;
 let dshView = null;
+let tray = null;
 let pollTimer = null;
-let tray = null;          // 系统托盘图标
-let userWantsQuit = false; // 用户已明确选择完全退出（放行 close）
-let closeAction = null;   // 本轮关闭选择：'quit' 表示已确认退出（放行 close）
-let trayNotified = false; // 是否已弹过"已最小化"提示气泡
-let prevDshOnline = null; // 上一次轮询的 DSH 状态（用于边沿检测）
-let prevNetOnline = null; // 上一次轮询的外网状态（用于边沿检测）
+let userWantsQuit = false;   // 托盘"退出"或关闭对话框选择"关闭并退出"
+let closeAction = null;      // 本轮关闭选择：'quit' 放行
+let trayNotified = false;
+let cleanupDone = false;
+let cleanupRunning = false;
+let service = null;
 
-// ---------- 日志 ----------
-function log(msg) {
-  try {
-    fs.appendFileSync(path.join(__dirname, 'load-status.log'), `${new Date().toISOString()} ${msg}\n`);
-  } catch (_) { /* 忽略日志写入失败 */ }
-}
+const dshGuard = new FlapGuard({ failThreshold: config.dshFailThreshold, recoverThreshold: 1 });
+const netGuard = new FlapGuard({ failThreshold: config.netFailThreshold, recoverThreshold: 1 });
+let prevStable = { dsh: null, net: null };
+const health = { dsh: null, net: null, lastDshCheck: null, lastNetCheck: null };
+const viewState = { state: 'idle', error: null, attempts: 0, lastAttemptAt: 0 };
+let lastTrayMenuKey = '';
 
-// ---------- 健康检查 ----------
-async function isDshReachable() {
-  try {
-    const res = await fetch(DSH_URL, { signal: AbortSignal.timeout(CHECK_TIMEOUT) });
-    return res.status < 500; // 任意 <500 响应都算服务活着（302/404 也算）
-  } catch (_) { return false; }
-}
-
-async function isInternetReachable() {
-  try {
-    await fetch('https://www.baidu.com', { signal: AbortSignal.timeout(CHECK_TIMEOUT) });
+// ---------- 安全策略执行 ----------
+function openExternalSafely(url, origin) {
+  const verdict = decideOpenExternal({ url, allowedSchemes: config.externalSchemes });
+  if (verdict.action === 'open') {
+    logger.info(`外部链接交给系统浏览器（${origin}）: ${safeUrl(url)}`);
+    shell.openExternal(url).catch((err) => logger.warn(`打开外部链接失败: ${err.message}`));
     return true;
-  } catch (_) { return false; }
+  }
+  logger.warn(`拒绝打开外部链接（${verdict.reason}，来源 ${origin}）: ${safeUrl(url)}`);
+  return false;
 }
 
-// ---------- DSH 服务生命周期 ----------
-function waitForDshReady(timeoutMs = START_WAIT_TIMEOUT) {
-  return new Promise((resolve) => {
-    let done = false;
-    const finish = (v) => { if (!done) { done = true; resolve(v); } };
-    const deadline = Date.now() + timeoutMs;
-    const tick = async () => {
-      if (done) return;
-      let ok = false;
-      try { ok = await isDshReachable(); } catch (_) { ok = false; }
-      if (ok) return finish(true);
-      if (Date.now() >= deadline) return finish(false);
-      setTimeout(tick, 1000);
-    };
-    tick();
-    // 硬超时兜底：无论如何都要结束等待，不阻塞后续流程
-    setTimeout(() => finish(false), timeoutMs + 2000);
+/** 对所有 webContents 统一加导航/弹窗防线（放在 web-contents-created 里最保险） */
+function guardWebContents(contents, role) {
+  contents.on('will-navigate', (event, url) => {
+    const verdict = decideNavigation({ targetUrl: url, appUrl: config.url });
+    if (verdict.action === 'allow') return;
+    event.preventDefault();
+    if (verdict.action === 'external') openExternalSafely(url, `${role}/will-navigate`);
+    else logger.warn(`已阻止导航（${verdict.reason}，${role}）: ${safeUrl(url)}`);
+  });
+  contents.on('will-redirect', (event, url) => {
+    const verdict = decideNavigation({ targetUrl: url, appUrl: config.url, allowExternal: false });
+    if (verdict.action === 'allow') return;
+    event.preventDefault();
+    logger.warn(`已阻止重定向（${verdict.reason}，${role}）: ${safeUrl(url)}`);
+  });
+  contents.setWindowOpenHandler(({ url }) => {
+    const verdict = decideNavigation({ targetUrl: url, appUrl: config.url });
+    if (verdict.action === 'allow' && role === 'dsh-view') {
+      contents.loadURL(url).catch((err) => logger.warn(`同源弹窗加载失败: ${err.message}`));
+    } else if (verdict.action === 'external') {
+      openExternalSafely(url, `${role}/window-open`);
+    } else {
+      logger.warn(`已阻止弹窗（${verdict.reason}，${role}）: ${safeUrl(url)}`);
+    }
+    return { action: 'deny' };
+  });
+  contents.on('will-attach-webview', (event) => {
+    event.preventDefault();
+    logger.warn(`已阻止 webview 附加（${role}）`);
   });
 }
 
-/** 确保 DSH 服务在跑：已有则复用，否则由本程序拉起 */
-async function ensureDshRunning() {
-  if (await isDshReachable()) {
-    log(`DSH already running at ${DSH_URL} (reuse, not managed by this app)`);
-    state.serviceManaged = false;
-    state.serviceExited = false;
-    return;
-  }
-
-  log(`DSH not reachable, starting: ${DSH_START_COMMAND}`);
-  state.starting = true;
-  state.serviceExited = false;
-  try {
-    state.serviceProc = spawn(DSH_START_COMMAND, {
-      shell: true,
-      cwd: os.homedir(),
-      windowsHide: true,
-      stdio: ['ignore', 'pipe', 'pipe'],
+/** 会话级权限管控：默认拒绝，只放行最小白名单 */
+function hardenSession(targetSession, role) {
+  if (!targetSession) return;
+  targetSession.setPermissionRequestHandler((contents, permission, callback, details) => {
+    const requestingUrl = (details && details.requestingUrl) || (contents && contents.getURL && contents.getURL()) || null;
+    const verdict = decidePermission({
+      permission,
+      requestingUrl,
+      appUrl: config.url,
+      allowExtra: config.allowedPermissions
     });
-    state.serviceManaged = true;
-    state.servicePid = state.serviceProc.pid;
-    log(`spawned DSH service pid=${state.servicePid}`);
-
-    state.serviceProc.stdout.on('data', (d) => log(`[dsh-svc] ${String(d).trim().slice(0, 300)}`));
-    state.serviceProc.stderr.on('data', (d) => log(`[dsh-svc-err] ${String(d).trim().slice(0, 300)}`));
-    state.serviceProc.on('error', (e) => log(`DSH service spawn error: ${e.message}`));
-    state.serviceProc.on('exit', (code, sig) => {
-      log(`DSH service exited code=${code} sig=${sig}`);
-      if (state.serviceManaged) {
-        // 本程序拉起的服务退出了：保持"本程序管理"语义，标记为已停止
-        state.serviceExited = true;
-        state.servicePid = null;
-      }
-      state.starting = false;
-      pushStatus();
+    if (!verdict.allow) logger.warn(`权限请求被拒绝（${role}）: ${permission} [${verdict.reason}]`);
+    callback(verdict.allow);
+  });
+  targetSession.setPermissionCheckHandler((contents, permission, requestingOrigin, details) => {
+    const requestingUrl = (details && details.requestingUrl) || requestingOrigin || null;
+    const verdict = decidePermission({
+      permission,
+      requestingUrl,
+      appUrl: config.url,
+      allowExtra: config.allowedPermissions
     });
-
-    const ready = await waitForDshReady();
-    state.starting = false;
-    if (ready) log('DSH service ready');
-    else log('WARN: DSH service did not become ready within timeout');
-  } catch (e) {
-    state.starting = false;
-    log(`failed to start DSH service: ${e.message}`);
+    return verdict.allow;
+  });
+  if (typeof targetSession.setDevicePermissionHandler === 'function') {
+    targetSession.setDevicePermissionHandler(() => {
+      logger.warn(`设备权限被拒绝（${role}）`);
+      return false;
+    });
   }
 }
 
-/** 关闭窗口时清理：仅清理本程序拉起的服务（三级兜底，确保进程被终止） */
-function killManagedService() {
-  if (state.quitting) return;
-  state.quitting = true;
-  if (!state.serviceManaged || !state.serviceProc) return;
-  const pid = state.servicePid;
-  log(`killing managed DSH service pid=${pid}`);
-
-  // 1) 直接终止 spawn 的包装进程（shell 包装）
-  try { state.serviceProc.kill(); } catch (e) { log(`proc.kill: ${e.message}`); }
-
-  // 2) 终止整棵进程树（Windows）
-  if (process.platform === 'win32') {
-    try {
-      execFileSync('taskkill', ['/pid', String(pid), '/T', '/F'], { stdio: 'ignore' });
-      log('taskkill tree ok');
-    } catch (e) {
-      log(`taskkill tree failed: ${e.message}`);
-    }
-  }
-
-  // 3) 端口兜底：直接终止监听 DSH 端口的进程（仅限本程序拉起的服务，绝对安全）
-  try {
-    const port = new URL(DSH_URL).port || (DSH_URL.startsWith('https:') ? '443' : '80');
-    const out = execFileSync('netstat', ['-ano'], { encoding: 'utf8' });
-    const re = new RegExp(`127\\.0\\.0\\.1:${port}\\s+.*LISTENING\\s+(\\d+)`);
-    const m = out.match(re);
-    if (m) {
-      const target = Number(m[1]);
-      log(`port fallback: killing pid=${target} on :${port}`);
-      try { process.kill(target); log('port fallback ok'); } catch (e2) { log(`port fallback failed: ${e2.message}`); }
-    }
-  } catch (e3) { log(`port fallback error: ${e3.message}`); }
-
-  state.servicePid = null;
-  state.serviceManaged = false;
-}
-
-/** 重启由本程序管理的服务（复用模式/外部服务不可重启） */
-async function restartManagedService() {
-  if (!state.serviceManaged) return { ok: false, reason: 'external' };
-  if (state.servicePid) killManagedService();
-  state.quitting = false;
-  await ensureDshRunning();
-  return { ok: true };
-}
-
-// ---------- 状态推送与 IPC ----------
+// ---------- 状态 ----------
 function buildStatus() {
+  const sm = service ? service.snapshot() : { mode: 'unknown' };
   return {
-    dshOnline: state.dshOnline,
-    internetOnline: state.internetOnline,
-    starting: state.starting,
-    serviceManaged: state.serviceManaged,
-    serviceExited: state.serviceExited,
-    servicePid: state.servicePid,
-    lastDshCheck: state.lastDshCheck,
-    lastNetCheck: state.lastNetCheck,
-    dshUrl: DSH_URL,
+    dshOnline: dshGuard.stable === true,
+    dshDetail: health.dsh ? { status: health.dsh.status, identity: health.dsh.identity, reason: health.dsh.reason, latencyMs: health.dsh.latencyMs } : null,
+    internetOnline: netGuard.stable === true,
+    netDetail: health.net ? { status: health.net.status, reason: health.net.reason, skipped: Boolean(health.net.skipped) } : null,
+    netCheckEnabled: config.netCheck,
+    starting: Boolean(sm.starting),
+    mode: sm.mode,
+    managed: Boolean(sm.managed),
+    owned: Boolean(sm.owned),
+    adopted: Boolean(sm.adopted),
+    servicePid: sm.listenerPid || null,
+    serviceName: sm.listenerName || null,
+    listenerVerified: Boolean(sm.listenerVerified),
+    wrapperPid: sm.wrapperPid || null,
+    observed: sm.observed || null,
+    restartable: Boolean(sm.restartable),
+    forceRestartable: Boolean(sm.forceRestartable),
+    lastError: sm.lastError || (logger.lastErrorWithin ? logger.lastErrorWithin(10 * 60 * 1000) : null),
+    lastKillSteps: sm.lastKill ? sm.lastKill.steps.join(' → ') : null,
+    viewState: viewState.state,
+    viewError: viewState.error,
+    lastDshCheck: health.lastDshCheck,
+    lastNetCheck: health.lastNetCheck,
+    dshUrl: safeUrl(config.url),
+    remoteTarget: config.remoteTarget,
+    logFile: config.logFile,
+    singleInstance: true
   };
 }
 
 function pushStatus() {
   if (win && !win.isDestroyed()) win.webContents.send('status-update', buildStatus());
+  refreshTrayMenu();
 }
 
-async function pollStatus() {
-  const [dsh, net] = await Promise.all([isDshReachable(), isInternetReachable()]);
+// ---------- 视图 ----------
+function maybeLoadDshView(reason) {
+  if (!dshView || dshView.webContents.isDestroyed()) return;
+  const now = Date.now();
+  if (reason !== 'user') {
+    if (viewState.attempts >= config.viewMaxAttempts) return;
+    if (now - viewState.lastAttemptAt < config.viewRetryIntervalMs) return;
+  }
+  viewState.attempts += 1;
+  viewState.lastAttemptAt = now;
+  viewState.state = 'loading';
+  viewState.error = null;
+  logger.info(`加载 DSH 视图（${reason}，第 ${viewState.attempts} 次）: ${safeUrl(config.url)}`);
+  dshView.webContents.loadURL(config.url).catch((err) => {
+    viewState.state = 'failed';
+    viewState.error = err && err.message ? err.message : String(err);
+    logger.warn(`DSH 视图加载失败: ${viewState.error}`);
+    pushStatus();
+  });
+}
 
-  // 状态边沿检测：仅当窗口隐藏（托盘驻留）且状态发生翻转时才弹通知，
-  // 窗口可见时由侧边栏展示，不弹托盘气泡
-  const windowHidden = !win || win.isDestroyed() || !win.isVisible();
-  if (windowHidden) {
-    if (prevDshOnline !== null && prevDshOnline !== dsh) {
-      if (dsh) notifyTray('DSH 服务已恢复', `DSH 服务恢复可用（${DSH_URL}）`);
-      else notifyTray('DSH 服务异常', `DSH 服务不可达（${DSH_URL}）\n可通过托盘菜单恢复窗口后处理。`);
+// ---------- 轮询 ----------
+async function pollStatus() {
+  const [dshResult, netResult] = await Promise.all([
+    probeDsh({ url: config.url, timeoutMs: config.checkTimeoutMs, requireHtml: config.requireHtml }),
+    config.netCheck
+      ? probeInternet({ url: config.netCheckUrl, timeoutMs: config.checkTimeoutMs })
+      : Promise.resolve({ ok: true, skipped: true, reason: 'disabled' })
+  ]);
+
+  health.dsh = dshResult;
+  health.net = netResult;
+  health.lastDshCheck = new Date().toISOString();
+  health.lastNetCheck = new Date().toISOString();
+
+  const dshStable = dshGuard.update(dshResult.ok);
+  const netStable = netGuard.update(config.netCheck ? netResult.ok : true);
+
+  if (service) await service.refresh({ healthy: dshStable, reachable: dshResult.reachable });
+
+  const transitions = detectTransitions(prevStable, { dsh: dshStable, net: netStable });
+  prevStable = { dsh: dshStable, net: netStable };
+
+  const hidden = !win || win.isDestroyed() || !win.isVisible();
+  if (hidden) {
+    for (const t of transitions) {
+      if (t.kind === 'dsh') {
+        if (t.to) notifyTray('DSH 服务已恢复', `DSH 服务恢复可用（${safeUrl(config.url)}）`);
+        else notifyTray('DSH 服务异常', `DSH 服务不可达（${safeUrl(config.url)}）\n可从托盘恢复窗口后处理。`);
+      } else {
+        if (t.to) notifyTray('网络已恢复', '外网连接已恢复。');
+        else notifyTray('网络离线', '无法访问外网，DSH 的部分功能可能受限。');
+      }
     }
-    if (prevNetOnline !== null && prevNetOnline !== net) {
-      if (net) notifyTray('网络已恢复', '外网连接已恢复。');
-      else notifyTray('网络离线', '无法访问外网，DSH 的部分功能可能受限。');
-    }
+  } else if (transitions.some((t) => t.kind === 'dsh' && !t.to)) {
+    logger.warn(`DSH 服务不可达：${dshResult.reason}（identity=${dshResult.identity}）`);
   }
 
-  prevDshOnline = dsh;
-  prevNetOnline = net;
-  state.dshOnline = dsh;
-  state.internetOnline = net;
-  state.lastDshCheck = new Date().toISOString();
-  state.lastNetCheck = new Date().toISOString();
+  // 服务恢复后自动把视图补回来（旧版本只能手动点"刷新"）
+  if (dshStable && viewState.state !== 'ready') maybeLoadDshView('recover');
+
   pushStatus();
 }
 
-// ---------- 托盘与窗口显隐 ----------
-function createTray() {
-  if (tray) return;
-  const icon = nativeImage.createFromPath(path.join(__dirname, 'icon.png'));
-  tray = new Tray(icon);
-  tray.setToolTip('DSH — 点击恢复窗口');
+// ---------- 托盘 ----------
+function trayMenuKey(sm) {
+  return `${sm.restartable ? 1 : 0}${sm.forceRestartable ? 1 : 0}`;
+}
+
+function refreshTrayMenu() {
+  if (!tray) return;
+  const sm = service ? service.snapshot() : { restartable: false, forceRestartable: false };
+  const key = trayMenuKey(sm);
+  if (key === lastTrayMenuKey) return;
+  lastTrayMenuKey = key;
   tray.setContextMenu(Menu.buildFromTemplate([
     { label: '显示 DSH 窗口', click: () => showWindow() },
+    {
+      label: '重启 DSH 服务',
+      enabled: Boolean(sm.restartable),
+      click: () => { service.restart({ force: false }).then(pushStatus).catch((err) => logger.error('托盘重启失败', err)); }
+    },
+    {
+      label: '接管并重启（终止外部 dsh）',
+      enabled: Boolean(sm.forceRestartable),
+      click: () => { service.restart({ force: true }).then(pushStatus).catch((err) => logger.error('接管重启失败', err)); }
+    },
+    { label: '打开日志', click: () => openLogFile() },
     { type: 'separator' },
-    { label: '退出（关闭 DSH）', click: () => { userWantsQuit = true; app.quit(); } },
+    { label: '退出（清理本程序拉起的服务）', click: () => { userWantsQuit = true; app.quit(); } }
   ]));
+}
+
+function createTray() {
+  if (tray) return;
+  try {
+    const icon = nativeImage.createFromPath(path.join(__dirname, 'icon.png'));
+    tray = new Tray(icon);
+  } catch (err) {
+    logger.error('创建托盘图标失败（继续运行，但将没有托盘）', err);
+    return;
+  }
+  tray.setToolTip('DSH — 点击恢复窗口');
+  lastTrayMenuKey = '';
+  refreshTrayMenu();
   tray.on('click', () => showWindow());
   tray.on('double-click', () => showWindow());
 }
@@ -248,29 +289,40 @@ function showWindow() {
 }
 
 function hideToTray() {
+  if (!win || win.isDestroyed()) return;
   win.hide();
   if (tray && !trayNotified) {
     trayNotified = true;
     try {
       tray.displayBalloon({
         title: 'DSH 已最小化到托盘',
-        content: '程序与 DSH 服务仍在后台运行。点击托盘图标恢复窗口；托盘菜单选择"退出"可完全关闭。',
+        content: '程序与 DSH 服务仍在后台运行。点击托盘图标恢复窗口；托盘菜单选择"退出"可完全关闭。'
       });
-    } catch (_) { /* 气球提示失败不影响功能 */ }
+    } catch (_) { /* 气泡失败不影响功能 */ }
   }
 }
 
-/** 托盘气泡通知（仅在窗口隐藏时由状态变化触发） */
 function notifyTray(title, content) {
   if (!tray) return;
-  try { tray.displayBalloon({ title, content }); } catch (_) { /* 通知失败不影响功能 */ }
+  try { tray.displayBalloon({ title, content }); } catch (_) { /* 忽略 */ }
+}
+
+async function openLogFile() {
+  try {
+    const err = await shell.openPath(config.logFile);
+    if (err) shell.showItemInFolder(config.logFile);
+    return { ok: true };
+  } catch (err) {
+    logger.warn(`打开日志失败: ${err.message}`);
+    return { ok: false, error: err.message };
+  }
 }
 
 // ---------- 窗口 ----------
 function layoutViews() {
   if (!win || win.isDestroyed() || !dshView) return;
   const [w, h] = win.getContentSize();
-  dshView.setBounds({ x: SIDEBAR_WIDTH, y: 0, width: Math.max(0, w - SIDEBAR_WIDTH), height: h });
+  dshView.setBounds({ x: config.sidebarWidth, y: 0, width: Math.max(0, w - config.sidebarWidth), height: h });
 }
 
 function createWindow() {
@@ -279,58 +331,99 @@ function createWindow() {
     height: 900,
     title: 'DSH',
     autoHideMenuBar: true,
+    backgroundColor: '#16181d',
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
       nodeIntegration: false,
+      nodeIntegrationInSubFrames: false,
       sandbox: true,
-    },
+      webviewTag: false,
+      allowRunningInsecureContent: false,
+      experimentalFeatures: false,
+      spellcheck: false,
+      safeDialogs: true,
+      backgroundThrottling: false
+    }
   });
 
-  // 宿主窗口 = 侧边栏页面
-  win.loadFile(path.join(__dirname, 'renderer', 'index.html'));
+  win.loadURL(SIDEBAR_URL).catch((err) => logger.error('侧边栏加载失败', err));
+  guardWebContents(win.webContents, 'sidebar');
 
-  // 右侧视图 = DSH 网页
-  dshView = new WebContentsView({
-    webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true },
-  });
+  const viewOptions = {
+    contextIsolation: true,
+    nodeIntegration: false,
+    nodeIntegrationInSubFrames: false,
+    sandbox: true,
+    webviewTag: false,
+    allowRunningInsecureContent: false,
+    experimentalFeatures: false,
+    spellcheck: false,
+    safeDialogs: true
+  };
+  if (config.viewPartition) viewOptions.partition = config.viewPartition;
+  dshView = new WebContentsView({ webPreferences: viewOptions });
   win.contentView.addChildView(dshView);
   layoutViews();
-  dshView.webContents.loadURL(DSH_URL);
+
+  guardWebContents(dshView.webContents, 'dsh-view');
   dshView.webContents.on('did-finish-load', () => {
-    log(`DSH view loaded: ${dshView.webContents.getURL()}`);
+    const current = dshView.webContents.getURL();
+    if (current.startsWith('file:')) return; // 占位页不计入
+    viewState.state = 'ready';
+    viewState.error = null;
+    viewState.attempts = 0;
+    logger.info(`DSH 视图已加载: ${safeUrl(current)}`);
     pushStatus();
   });
-  dshView.webContents.setWindowOpenHandler(({ url }) => {
-    // 同源（DSH 服务）弹窗留在应用内导航，避免跳出系统浏览器
-    if (url.startsWith(DSH_URL)) {
-      dshView.webContents.loadURL(url);
-      return { action: 'deny' };
-    }
-    shell.openExternal(url); // 外链才交给系统浏览器
-    return { action: 'deny' };
+  dshView.webContents.on('did-fail-load', (event, errorCode, errorDescription, validatedURL, isMainFrame) => {
+    if (!isMainFrame) return;
+    viewState.state = 'failed';
+    viewState.error = `${errorDescription} (${errorCode})`;
+    logger.warn(`DSH 视图加载失败: ${viewState.error} url=${safeUrl(validatedURL)}`);
+    pushStatus();
+  });
+  dshView.webContents.on('render-process-gone', (event, details) => {
+    viewState.state = 'failed';
+    viewState.error = `视图进程异常退出: ${details && details.reason}`;
+    logger.error(`DSH 视图进程异常退出: ${details && details.reason}`);
+    pushStatus();
+  });
+  dshView.webContents.on('before-input-event', (event, input) => {
+    if (!config.devtools) return;
+    if (input.type === 'keyDown' && input.key === 'F12') dshView.webContents.toggleDevTools();
   });
 
-  win.on('resize', layoutViews);
-  win.on('close', (e) => {
-    // 已明确退出（托盘菜单"退出"/本轮选择"关闭并退出"）→ 放行
-    if (userWantsQuit || closeAction === 'quit') return;
+  // 先显示本地占位页，服务就绪后由轮询自动切换到真实页面
+  dshView.webContents.loadURL(PLACEHOLDER_URL).catch((err) => logger.warn(`占位页加载失败: ${err.message}`));
 
-    e.preventDefault(); // 拦截默认关闭，每次关闭都询问
+  win.on('resize', layoutViews);
+  win.on('close', (event) => {
+    if (userWantsQuit || closeAction === 'quit') return;
+    event.preventDefault();
+    if (!win || win.isDestroyed()) return;
+
+    const sm = service ? service.snapshot() : { mode: 'unknown' };
+    const detail = [
+      sm.mode === 'managed'
+        ? `当前服务由本程序管理${sm.listenerPid ? `（pid ${sm.listenerPid}）` : ''}。`
+        : '当前服务不是本程序拉起的，退出时不会被终止。',
+      '最小化到托盘：程序与 DSH 服务继续在后台运行。',
+      '关闭并退出：只清理本程序拉起的 DSH 服务。'
+    ].join('\n');
 
     const choice = dialog.showMessageBoxSync(win, {
       type: 'question',
       title: 'DSH',
       message: '关闭窗口后要做什么？',
-      detail: '最小化到托盘：程序与 DSH 服务继续在后台运行。\n关闭并退出：停止由本程序拉起的 DSH 服务。',
+      detail,
       buttons: ['最小化到托盘', '关闭并退出', '取消'],
       defaultId: 0,
       cancelId: 2,
-      noLink: true,
+      noLink: true
     });
-    if (choice === 0) hideToTray(); // 最小化到托盘（下次点 × 仍会询问）
-    else if (choice === 1) { closeAction = 'quit'; win.close(); } // 重新触发 close，本次放行
-    // choice === 2（取消）：什么都不做，窗口保持打开
+    if (choice === 0) hideToTray();
+    else if (choice === 1) { closeAction = 'quit'; win.close(); }
   });
   win.on('closed', () => {
     win = null;
@@ -338,43 +431,150 @@ function createWindow() {
   });
 }
 
-// ---------- 生命周期与 IPC ----------
-ipcMain.handle('get-status', () => buildStatus());
-ipcMain.handle('reload-dsh', () => {
-  if (dshView && !dshView.webContents.isDestroyed()) dshView.webContents.reload();
-  return { ok: true };
-});
-ipcMain.handle('restart-service', async () => {
-  if (!state.serviceManaged) return { ok: false, reason: 'external' };
-  return restartManagedService();
-});
+// ---------- IPC（带 sender 校验） ----------
+function isSidebarSender(event) {
+  try {
+    return Boolean(win && !win.isDestroyed() && event && event.sender && event.sender.id === win.webContents.id);
+  } catch (_) {
+    return false;
+  }
+}
+
+function registerIpc() {
+  const register = (channel, handler) => {
+    ipcMain.handle(channel, async (event, ...args) => {
+      if (!isSidebarSender(event)) {
+        logger.warn(`拒绝来源不明的 IPC 调用: ${channel}`);
+        return { ok: false, error: 'forbidden' };
+      }
+      try {
+        return await handler(...args);
+      } catch (err) {
+        logger.error(`IPC ${channel} 执行失败`, err);
+        return { ok: false, error: err && err.message ? err.message : String(err) };
+      }
+    });
+  };
+
+  register('get-status', () => buildStatus());
+  register('reload-dsh', () => {
+    viewState.attempts = 0;
+    maybeLoadDshView('user');
+    return { ok: true };
+  });
+  register('restart-service', async (options) => {
+    const force = Boolean(options && options.force);
+    logger.info(`收到重启请求（force=${force}，模式=${service.snapshot().mode}）`);
+    const result = await service.restart({ force });
+    if (!result.ok) logger.warn(`重启未完成：${result.message || result.reason}`);
+    pushStatus();
+    return result;
+  });
+  register('open-log', () => openLogFile());
+  register('get-log-tail', () => ({ lines: logger.tail(80) }));
+}
+
+// ---------- 退出清理 ----------
+function startShutdown(reason) {
+  if (cleanupRunning || cleanupDone) return;
+  cleanupRunning = true;
+  if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+  logger.info(`开始退出清理（触发原因：${reason}）`);
+  (async () => {
+    if (!service) {
+      cleanupDone = true;
+      app.exit(0);
+      return;
+    }
+    try {
+      const result = await service.shutdown({ timeoutMs: config.killTimeoutMs });
+      logger.info(`退出清理结果: ok=${result.ok} reason=${result.reason || '-'} released=${result.released === undefined ? '-' : result.released}`);
+    } catch (err) {
+      logger.error('退出清理异常', err);
+    } finally {
+      cleanupDone = true;
+      if (tray) { try { tray.destroy(); } catch (_) { /* 忽略 */ } tray = null; }
+      app.exit(0);
+    }
+  })();
+}
 
 // ---------- 生命周期 ----------
-app.whenReady().then(() => {
-  createTray();   // 系统托盘（最小化到托盘后用于恢复/退出）
-  createWindow(); // 窗口立即出现，不被服务启动阻塞
-  pollTimer = setInterval(pollStatus, POLL_INTERVAL);
-  pollStatus();
+function bootstrap() {
+  app.enableSandbox(); // 强制所有渲染进程运行在沙箱中
 
-  // 服务在后台拉起/复用，侧边栏会从"启动中"自动过渡到"运行中"
-  ensureDshRunning();
-
-  app.on('activate', () => {
-    // macOS：点击 Dock 图标恢复窗口；窗口已销毁则重建
-    if (!win || win.isDestroyed()) { createWindow(); return; }
-    if (!win.isVisible()) win.show();
-  });
-});
-
-app.on('window-all-closed', () => {
-  if (process.platform !== 'darwin') {
-    killManagedService(); // 窗口全关即清理服务（幂等）
-    app.quit();
+  if (config.fatalError) {
+    logger.error(`配置校验失败：${config.fatalError}`);
+    dialog.showErrorBox('DSH 配置错误', config.fatalError);
+    app.exit(1);
+    return;
   }
-});
 
-app.on('before-quit', () => {
-  if (pollTimer) clearInterval(pollTimer);
-  if (tray) { tray.destroy(); tray = null; }
-  killManagedService(); // 兜底，quitting 标志保证只执行一次
-});
+  service = new ServiceManager({
+    config: {
+      url: config.url,
+      host: config.host,
+      port: config.port,
+      startCommand: config.startCommand,
+      cwd: os.homedir(),
+      stdio: ['ignore', 'pipe', 'pipe'],
+      readyTimeoutMs: config.readyTimeoutMs,
+      killTimeoutMs: config.killTimeoutMs,
+      verify: { pattern: config.killPattern, allowUnverified: config.allowUnverifiedKill }
+    },
+    logger,
+    exec,
+    probeHealth: () => probeDsh({ url: config.url, timeoutMs: config.checkTimeoutMs, requireHtml: config.requireHtml }),
+    findListenerPid: (port, host) => findListenerPid(port, { host, exec })
+  });
+
+  app.whenReady().then(() => {
+    if (config.viewPartition) hardenSession(session.fromPartition(config.viewPartition), 'dsh-view');
+    hardenSession(session.defaultSession, 'default');
+
+    logger.info('============================================================');
+    logger.info(`DSH Electron 启动（v${app.getVersion()}，Electron ${process.versions.electron}，Node ${process.versions.node}）`);
+    logger.info(`服务地址: ${safeUrl(config.url)}${config.remoteTarget ? '（远端目标，已显式放行）' : '（本机）'}`);
+    logger.info(`启动命令: ${config.startCommand}`);
+    logger.info(`日志文件: ${config.logFile}（上限 ${Math.round(config.logMaxBytes / 1024)}KB 自动轮转，凭据默认脱敏）`);
+    logger.info(`安全策略: 导航=${describePolicy().navigation}；权限白名单=${JSON.stringify(describePolicy({ allowExtra: config.allowedPermissions }).allowedPermissions)}；外链协议=${JSON.stringify(config.externalSchemes || ['http:', 'https:'])}`);
+    if (config.allowUnverifiedKill) logger.warn('DSH_ALLOW_UNVERIFIED_KILL=1：清理时将允许终止身份未通过校验的进程（风险自负）');
+
+    registerIpc();
+    createTray();
+    createWindow();      // 窗口立即出现，不被服务启动阻塞
+    pollStatus();
+    pollTimer = setInterval(() => { pollStatus().catch((err) => logger.error('轮询异常', err)); }, config.pollIntervalMs);
+    service.ensure().catch((err) => logger.error('服务启动流程异常', err));
+
+    app.on('activate', () => {
+      if (!win || win.isDestroyed()) { createWindow(); return; }
+      if (!win.isVisible()) win.show();
+    });
+  });
+
+  app.on('window-all-closed', () => {
+    // 与平台无关：窗口全部关闭即清理本程序拉起的服务并退出（避免遗留服务）
+    startShutdown('window-all-closed');
+    app.quit();
+  });
+
+  app.on('before-quit', (event) => {
+    if (cleanupDone) return;
+    event.preventDefault();
+    startShutdown('before-quit');
+  });
+}
+
+// ---------- 入口 ----------
+const gotLock = app.requestSingleInstanceLock();
+if (!gotLock) {
+  // 已有实例在运行：直接退出（已有实例会通过 second-instance 唤醒窗口）
+  app.quit();
+} else {
+  app.on('second-instance', () => {
+    logger.info('检测到第二个实例启动，聚焦已有窗口');
+    showWindow();
+  });
+  bootstrap();
+}
