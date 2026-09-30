@@ -325,6 +325,109 @@ test('shutdown() 返回真实清理结果，不会被外层超时吞掉', async 
   assert.strictEqual(await isPortInUse(port, '127.0.0.1', 500), false);
 });
 
+test('拉起了但没就绪：也必须承认归属并能清理（旧实现留下不可清理的遗留进程）', async () => {
+  const port = await freePort();
+  const { manager, children } = makeManager({
+    port,
+    probeHealth: async () => ({ ok: false, reachable: false }), // 永远"不就绪"
+    config: { readyTimeoutMs: 300, readyPollMs: 50 }
+  });
+
+  const snap = await manager.ensure();
+  assert.strictEqual(snap.mode, 'stopped');
+  assert.strictEqual(snap.readyFailure, 'timeout');
+  assert.strictEqual(snap.owned, true, '本程序 spawn 过就必须承认归属，否则退出时不会清理它');
+  assert.strictEqual(snap.wrapperPid, children[0].pid);
+  assert.strictEqual(snap.listenerPid, null, '未认领的监听者不能算作我们的 pid');
+  assert.ok(manager.state.trustedPids.has(children[0].pid), '包装进程应进入可信集合，供收尾使用');
+
+  // 旧实现在这里会返回 not-managed（owned=false），于是这个进程永远留在系统里
+  const kill = await manager.killManaged('test');
+  assert.strictEqual(kill.ok, true, `应能清理自己拉起的进程：${JSON.stringify(kill)}`);
+  await sleep(200);
+  assert.strictEqual(isPidAlive(children[0].pid), false, '自己拉起的进程必须被收掉');
+  assert.strictEqual(await isPortInUse(port, '127.0.0.1', 500), false);
+});
+
+test('降级态（从未解析出监听者）不得被误报成 orphan，也不得出现 "pid null"', async () => {
+  const port = await freePort();
+  const holder = await startServer();
+  const { manager } = makeManager({
+    port,
+    config: { url: `http://127.0.0.1:${holder.port}` },
+    probeHealth: () => probeDsh({ url: holder.url, timeoutMs: 1000, requireHtml: true }),
+    findListenerPid: async () => null // netstat/ps 受限：始终解析不到监听者
+  });
+  manager.state.owned = true;
+  manager.state.mode = 'managed';
+  manager.state.listenerPid = null;
+  manager.state.listenerUnresolved = true; // 启动时就走了降级路径
+  manager.state.wrapperPid = 1234;
+
+  const snap = await manager.refresh({ healthy: true, reachable: true });
+  assert.strictEqual(snap.mode, 'managed', '服务正常且属本程序管理时不得降级成 orphan');
+  assert.strictEqual(snap.lastError, null);
+  assert.strictEqual(snap.restartable, true, '"重启服务"按钮不应被误灰');
+
+  // 对照组：不是降级态（真丢过监听者）仍应如实报 orphan，但不得再打印字面量 pid null
+  const other = makeManager({
+    port,
+    config: { url: `http://127.0.0.1:${holder.port}` },
+    probeHealth: () => probeDsh({ url: holder.url, timeoutMs: 1000, requireHtml: true }),
+    findListenerPid: async () => null
+  });
+  other.manager.state.owned = true;
+  other.manager.state.mode = 'managed';
+  other.manager.state.listenerPid = 6666;
+  const orphan = await other.manager.refresh({ healthy: true, reachable: true });
+  assert.strictEqual(orphan.mode, 'orphan');
+  assert.ok(!/pid null/.test(orphan.lastError || ''), `不得出现字面量 pid null：${orphan.lastError}`);
+  await holder.close();
+});
+
+test('认领失败（命令行读不到）时，spawn 相关性提供受限的恢复入口', async () => {
+  const port = await freePort();
+  const holder = await startServer();
+  const setup = () => makeManager({
+    port,
+    config: { url: `http://127.0.0.1:${holder.port}` },
+    kill: () => {},
+    isPidAlive: () => true,
+    waitForPortReleased: async () => true,
+    probeHealth: async () => ({ ok: true, reachable: true }),
+    // CIM/WMI 被限制：拿到进程名但读不到命令行 ⇒ dshLike=false
+    findListenerPid: async () => ({ pid: 7777, name: 'node.exe', commandLine: null })
+  });
+
+  // ① 我们刚拉起的进程认领失败过（readyFailure 非空）⇒ 允许用户显式接管
+  const failed = setup();
+  Object.assign(failed.manager.state, {
+    owned: true, mode: 'takeover', everSpawned: true, wrapperPid: 1234,
+    baselineListenerPid: null, readyFailure: 'identity-mismatch',
+    observed: { pid: 7777, name: 'node.exe', dshLike: false }
+  });
+  assert.strictEqual(failed.manager.snapshot().spawnCorrelated, true);
+  assert.strictEqual(failed.manager.snapshot().forceRestartable, true, '应提供恢复入口，而不是两边按钮全灰');
+  const adopted = await failed.manager.adoptAndRestart();
+  assert.ok(
+    !['not-dsh-like', 'no-commandline-evidence', 'listener-unknown'].includes(adopted.reason),
+    `spawn 相关性应被接受为证据：${JSON.stringify(adopted)}`
+  );
+  assert.strictEqual(failed.manager.state.adopted, true);
+
+  // ② 对照组：我们并没有"刚拉起就认领失败"这回事 ⇒ 仍然严格拒绝
+  const unrelated = setup();
+  Object.assign(unrelated.manager.state, {
+    owned: false, mode: 'takeover', everSpawned: false, baselineListenerPid: 7777,
+    readyFailure: null, observed: { pid: 7777, name: 'node.exe', dshLike: false }
+  });
+  assert.strictEqual(unrelated.manager.snapshot().forceRestartable, false);
+  const refused = await unrelated.manager.adoptAndRestart();
+  assert.strictEqual(refused.reason, 'not-dsh-like', '没有 spawn 相关性时必须继续拒绝');
+
+  await holder.close();
+});
+
 test('shutdown() 预算耗尽时如实返回 shutdown-timeout（不假装成功）', async () => {
   const port = await freePort();
   const { manager } = makeManager({
