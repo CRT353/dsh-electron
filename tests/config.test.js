@@ -2,6 +2,7 @@
 /** lib/config.js 单测：默认值、远端目标 fail-closed、数值收敛 */
 const test = require('node:test');
 const assert = require('node:assert');
+const path = require('path');
 
 const { loadConfig } = require('../lib/config');
 
@@ -18,6 +19,28 @@ test('默认配置：本机 3080 + dsh web --no-open，无致命错误', () => {
   assert.strictEqual(config.allowUnverifiedKill, false);
   assert.deepStrictEqual(config.externalSchemes, ['http:', 'https:']);
   assert.ok(config.logFile.endsWith('load-status.log'));
+});
+
+test('打包态（app.asar 内）默认日志路径换到可写目录，而不是写不进去的 asar', () => {
+  const root = 'C:\\Program Files\\DSH Desktop\\resources\\app.asar';
+  const userDataDir = 'C:\\Users\\x\\AppData\\Roaming\\DSH Desktop';
+
+  const packaged = loadConfig({}, { root, userDataDir });
+  assert.strictEqual(packaged.logFile, path.join(userDataDir, 'load-status.log'));
+  assert.ok(!/app\.asar/i.test(packaged.logFile), '绝不能把日志写进 asar 归档（实测必抛 ENOENT）');
+
+  // 没有 userDataDir 时也要退到可写目录，而不是退回 asar
+  const fallback = loadConfig({}, { root });
+  assert.ok(!/app\.asar/i.test(fallback.logFile));
+  assert.ok(fallback.logFile.endsWith('load-status.log'));
+
+  // 开发态（项目目录）保持原行为：仍写项目目录
+  const dev = loadConfig({}, { root: 'D:\\proj\\dsh_electron' });
+  assert.strictEqual(dev.logFile, path.join('D:\\proj\\dsh_electron', 'load-status.log'));
+
+  // 显式指定永远优先
+  const explicit = loadConfig({ DSH_LOG_FILE: 'D:\\logs\\x.log' }, { root, userDataDir });
+  assert.strictEqual(explicit.logFile, 'D:\\logs\\x.log');
 });
 
 test('端口从 DSH_URL 派生，且支持 https 默认端口', () => {

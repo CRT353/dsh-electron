@@ -86,3 +86,25 @@ test('logger.stream 单块限长，但错误块仍可定位', () => {
   logger.stream('dsh-svc-err', 'Error: boot failed');
   assert.match(logger.lastError(), /boot failed/);
 });
+
+test('日志落盘失败不再完全静默：首次失败进入环形缓冲（打包版 asar 场景的回归测试）', () => {
+  const dir = tmpDir();
+  // 构造"父路径其实是一个文件"——与 asar 归档内写入失败的机制完全一致（实测 ENOENT）
+  const fakeAsar = path.join(dir, 'app.asar');
+  fs.writeFileSync(fakeAsar, 'not a real archive');
+  const unwritable = path.join(fakeAsar, 'load-status.log');
+  const logger = createLogger({ file: unwritable });
+
+  logger.info('这条只进内存环');
+  assert.strictEqual(fs.existsSync(unwritable), false, '该路径确实写不进去');
+  assert.ok(logger.recentErrors(5).length >= 1, '首次落盘失败必须被记录，而不是静默吞掉');
+  assert.match(logger.lastError(), /日志写入失败/);
+  assert.match(logger.lastError(), /ENOENT|ENOTDIR/i);
+
+  // 只报一次，避免刷屏
+  logger.info('第二条');
+  const failures = logger.recentErrors(20).filter((t) => /日志写入失败/.test(t));
+  assert.strictEqual(failures.length, 1, '同样的落盘失败只提示一次');
+
+  fs.rmSync(dir, { recursive: true, force: true });
+});

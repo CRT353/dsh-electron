@@ -95,3 +95,54 @@ test('真实端口探测：占用中的端口会被识别（避免"端口空闲"
     await server.close();
   }
 });
+
+test('parseArgs 拒绝缺值/空串/越界端口（旧实现会静默回落到 3080 并停掉真实服务）', () => {
+  const badCases = [['--port'], ['--port', ''], ['--port', 'abc'], ['--port', '0'], ['--port', '-1'], ['--port', '65536'], ['--port', '3.5']];
+  for (const bad of badCases) {
+    assert.throws(() => parseArgs(bad), /--port/, `应拒绝: ${JSON.stringify(bad)}`);
+  }
+  assert.throws(() => parseArgs(['--host']), /--host/);
+  assert.throws(() => parseArgs(['--host', '   ']), /--host/);
+
+  assert.strictEqual(parseArgs(['--port', '1']).port, 1);
+  assert.strictEqual(parseArgs(['--port', '65535']).port, 65535);
+  assert.strictEqual(parseArgs(['--host', ' ::1 ']).host, '::1');
+});
+
+test('run() 对非法端口拒绝执行，绝不回落到默认端口', async () => {
+  const { deps, killed } = makeDeps({ isPortInUse: async () => true });
+  await assert.rejects(() => run({ port: NaN, ...deps }), /端口/);
+  await assert.rejects(() => run({ port: 70000, ...deps }), /端口/);
+  assert.strictEqual(killed.length, 0);
+});
+
+test('真实 dsh 垫片的命令行能通过身份校验（收紧默认模式后不得误漏真服务）', async () => {
+  // 本机 C:\nvm4w\nodejs\dsh.cmd 实际执行的命令行（实测核对）
+  const realShim =
+    '"C:\\nvm4w\\nodejs\\node.exe" "C:\\nvm4w\\nodejs\\node_modules\\@deepseek-ai\\dsh\\lib\\bin.js" web --no-open';
+  const { deps, killed } = makeDeps({
+    isPortInUse: async () => true,
+    findListenerPid: async () => ({ pid: 42060, name: 'node.exe', commandLine: realShim })
+  });
+  const result = await run({ port: 3080, dryRun: true, ...deps });
+  assert.strictEqual(result.action, 'would-stop');
+  assert.strictEqual(result.pid, 42060);
+  assert.strictEqual(killed.length, 0);
+});
+
+test('路径里偶然含 dsh 的无关 node 服务不再被判成 DSH（旧默认 /dsh/i 会误杀）', async () => {
+  const unrelated = [
+    'node C:\\Users\\dsh\\app\\server.js',
+    'node C:\\tools\\mydsh\\api.js',
+    'node dsh-something\\server.js'
+  ];
+  for (const commandLine of unrelated) {
+    const { deps, killed } = makeDeps({
+      isPortInUse: async () => true,
+      findListenerPid: async () => ({ pid: 4242, name: 'node.exe', commandLine })
+    });
+    const result = await run({ port: 3080, ...deps });
+    assert.strictEqual(result.action, 'refused', commandLine);
+    assert.strictEqual(killed.length, 0, `绝不能误杀: ${commandLine}`);
+  }
+});

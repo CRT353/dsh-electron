@@ -4,7 +4,9 @@
  *
  * 只终止"确实是 DSH 服务"的进程：
  *   1. 解析监听 DSH 端口的进程（netstat/lsof/ss + 命令行读取）；
- *   2. 通过身份校验（本工具的目标 pid 或 命令行匹配 dsh）才动手；
+ *   2. 通过身份校验才动手——证据是"进程名在可信名单内 且 命令行匹配 DSH 入口形态"
+ *      （判定模式与主程序共用 `lib/config.js#resolveKillPattern`，可用 DSH_KILL_PATTERN 覆盖）；
+ *      本工具**没有**"本程序记录过的 pid"这类证据，因此只会终止命令行能确认是 DSH 的进程；
  *   3. 先 SIGTERM，等端口释放，必要时才强杀；
  *   4. 校验不通过就明确拒绝并说明原因，绝不误杀（例如把别的 node 服务一起杀掉）。
  *
@@ -19,15 +21,40 @@ const path = require('path');
 const { createExec } = require('../lib/exec');
 const { findListenerPid, isPidAlive, isPortInUse, waitForPortReleased, decideKill } = require('../lib/procs');
 const { createLogger } = require('../lib/log');
+const { resolveKillPattern } = require('../lib/config');
 
 const DEFAULT_PORT = 3080;
+const DEFAULT_HOST = '127.0.0.1';
 
+/**
+ * 解析命令行参数；非法输入**直接抛错**（由 main 打印用法并以退出码 2 结束）。
+ *
+ * 旧实现是 `args.port = Number(argv[++i])`，而 run() 里用 `Number(options.port || DEFAULT_PORT)`：
+ * `--port` 缺值得到 NaN，NaN 是假值 ⇒ **静默回落到 3080**，可打印的目标却是 `NaN`
+ * ——用户以为在操作别的端口，实际停掉的可能是正在运行的 DSH 服务，且看不出异常。
+ */
 function parseArgs(argv) {
-  const args = { port: DEFAULT_PORT, dryRun: false, host: '127.0.0.1' };
+  const args = { port: DEFAULT_PORT, dryRun: false, host: DEFAULT_HOST };
   for (let i = 0; i < argv.length; i += 1) {
-    if (argv[i] === '--port') args.port = Number(argv[++i]);
-    else if (argv[i] === '--host') args.host = argv[++i];
-    else if (argv[i] === '--dry-run' || argv[i] === '-n') args.dryRun = true;
+    const token = argv[i];
+    if (token === '--port') {
+      const raw = argv[i + 1];
+      i += 1;
+      const num = Number(raw);
+      if (raw === undefined || String(raw).trim() === '' || !Number.isInteger(num) || num < 1 || num > 65535) {
+        throw new Error(
+          `--port 需要一个 1–65535 的整数（收到 ${raw === undefined ? '缺值' : JSON.stringify(raw)}）`
+        );
+      }
+      args.port = num;
+    } else if (token === '--host') {
+      const raw = argv[i + 1];
+      i += 1;
+      if (raw === undefined || String(raw).trim() === '') throw new Error('--host 需要一个非空主机名');
+      args.host = String(raw).trim();
+    } else if (token === '--dry-run' || token === '-n') {
+      args.dryRun = true;
+    }
   }
   return args;
 }
@@ -46,13 +73,18 @@ async function run(options = {}) {
     kill: options.kill || ((pid, signal) => process.kill(pid, signal)),
     platform: options.platform || process.platform,
     logger: options.logger || createLogger({ file: null }),
-    pattern: options.pattern || /dsh/i,
+    pattern: options.pattern || resolveKillPattern(process.env),
     allowUnverified: options.allowUnverified !== undefined
       ? options.allowUnverified
       : process.env.DSH_ALLOW_UNVERIFIED_KILL === '1'
   };
-  const port = Number(options.port || DEFAULT_PORT);
-  const host = options.host || '127.0.0.1';
+  // 端口/主机一律显式校验，绝不"回落默认值"：回落到 3080 会停掉真实 DSH 服务。
+  const port = options.port === undefined || options.port === null ? DEFAULT_PORT : Number(options.port);
+  if (!Number.isInteger(port) || port < 1 || port > 65535) {
+    throw new Error(`非法端口: ${String(options.port)}（应为 1–65535 的整数）`);
+  }
+  const hostRaw = options.host === undefined || options.host === null ? DEFAULT_HOST : String(options.host).trim();
+  const host = hostRaw === '' ? DEFAULT_HOST : hostRaw;
   const dryRun = Boolean(options.dryRun);
 
   const inUse = await deps.isPortInUse(port, host, 800);
@@ -125,7 +157,14 @@ async function run(options = {}) {
 }
 
 async function main() {
-  const args = parseArgs(process.argv.slice(2));
+  let args;
+  try {
+    args = parseArgs(process.argv.slice(2));
+  } catch (err) {
+    console.error(`参数错误: ${err && err.message ? err.message : err}`);
+    console.error('用法: node tools/stop-dsh.js [--port <1-65535>] [--host <地址>] [--dry-run|-n]');
+    process.exit(2);
+  }
   console.log('=== 停止 DSH 服务（带身份校验，不会误杀其它 node 进程）===');
   console.log(`目标: ${args.host}:${args.port}${args.dryRun ? '（dry-run，不会真的终止）' : ''}`);
   const logger = createLogger({ file: null, ringSize: 100 });

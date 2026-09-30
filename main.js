@@ -30,7 +30,17 @@ const { buildContextMenu } = require('./lib/context-menu');
 const { ServiceManager } = require('./lib/service');
 const { loadConfig } = require('./lib/config');
 
-const config = loadConfig(process.env, { root: __dirname });
+// 打包态 `__dirname` 落在 `resources\app.asar` 内（asar 归档不可写），因此把可写的
+// 用户数据目录一并交给配置层：默认日志路径会落到那里，而不是写不进去的 asar 里。
+function resolveUserDataDir() {
+  try {
+    return app.getPath('userData');
+  } catch (_) {
+    return null;
+  }
+}
+
+const config = loadConfig(process.env, { root: __dirname, userDataDir: resolveUserDataDir() });
 const logger = createLogger({
   file: config.logFile,
   maxBytes: config.logMaxBytes,

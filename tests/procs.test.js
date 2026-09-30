@@ -15,7 +15,8 @@ const {
   pickListener,
   isPidAlive,
   decideKill,
-  waitForPortReleased
+  waitForPortReleased,
+  findListenerPid
 } = require('../lib/procs');
 
 test('splitCommand 处理引号与空格', () => {
@@ -219,4 +220,70 @@ test('waitForPortReleased 轮询到端口释放', async () => {
     probe: async () => true
   });
   assert.strictEqual(never, false);
+});
+
+test('findListenerPid 在 Windows 上用 `netstat -ano`：-p TCP 会漏掉全部 IPv6 监听项', () => {
+  const calls = [];
+  const fixture = [
+    '',
+    '活动连接',
+    '',
+    '  协议  本地地址          外部地址        状态           PID',
+    '  TCP    127.0.0.1:3080         0.0.0.0:0              LISTENING       42060',
+    '  TCP    [::]:3080              [::]:0                 LISTENING       4',
+    '  TCP    [::1]:41889            [::]:0                 LISTENING       777',
+    '  UDP    [::]:500               *:*                                    2048'
+  ].join('\r\n');
+  const exec = (spec) => {
+    calls.push(spec);
+    if (spec.file === 'netstat') return { ok: true, stdout: fixture, stderr: '', code: 0 };
+    return { ok: false, stdout: '', stderr: 'stub（单测不真跑进程查询）', code: 1 };
+  };
+
+  const v4 = findListenerPid(3080, { exec, platform: 'win32', host: '127.0.0.1' });
+  assert.deepStrictEqual(calls[0].args, ['-ano'], '必须是 netstat -ano（旧实现传 -p TCP 会丢 IPv6）');
+  assert.ok(!calls[0].args.includes('-p'), '不得再传 -p');
+  assert.strictEqual(v4.pid, 42060);
+
+  // 只绑 IPv6 的服务必须能被发现：旧实现会判成"端口空闲"并打印"无需停止"
+  const v6 = findListenerPid(41889, { exec, platform: 'win32', host: '::1' });
+  assert.ok(v6, '只绑 [::1] 的监听者必须能解析出来');
+  assert.strictEqual(v6.pid, 777);
+  assert.strictEqual(v6.address, '[::1]');
+});
+
+test('DSH 身份判定模式：不误杀路径含 dsh 的无关服务，也不误漏真实 dsh 命令行', () => {
+  // 真实形态：本机 npm 垫片 dsh.cmd 实际执行的命令行（已实测核对）
+  const realShim =
+    '"C:\\nvm4w\\nodejs\\node.exe" "C:\\nvm4w\\nodejs\\node_modules\\@deepseek-ai\\dsh\\lib\\bin.js" web --no-open';
+  assert.strictEqual(decideKill({ pid: 1, name: 'node.exe', commandLine: realShim }).allowed, true, '真实命令行必须被认作 DSH');
+
+  const dshForms = [
+    'node D:\\x\\node_modules\\@deepseek-ai\\dsh\\bin.js web', // 作用域包路径
+    'node /usr/lib/node_modules/@deepseek-ai/dsh/bin.js web', // POSIX 布局
+    'dsh web --no-open', // 直接调用
+    '"C:\\nvm4w\\nodejs\\dsh.cmd" web --no-open', // 垫片直调
+    'node /opt/dsh/lib/bin.js web' // CLI 入口文件
+  ];
+  for (const commandLine of dshForms) {
+    assert.strictEqual(
+      decideKill({ pid: 1, name: 'node.exe', commandLine }).allowed,
+      true,
+      `不该漏掉真实 dsh 形态: ${commandLine}`
+    );
+  }
+
+  // 旧默认 /dsh/i 会把下面这些**无关** node 服务判成 DSH 并杀掉
+  const unrelated = [
+    'node C:\\Users\\dsh\\app\\server.js',
+    'node C:\\tools\\mydsh\\api.js',
+    'node dsh-something\\server.js',
+    'node C:\\projects\\dshboard\\index.js',
+    'node C:\\temp\\notdsh.js'
+  ];
+  for (const commandLine of unrelated) {
+    const verdict = decideKill({ pid: 4242, name: 'node.exe', commandLine });
+    assert.strictEqual(verdict.allowed, false, `不该把无关服务判成 DSH: ${commandLine}`);
+    assert.strictEqual(verdict.reason, 'commandline-mismatch', commandLine);
+  }
 });
