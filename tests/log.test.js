@@ -164,3 +164,17 @@ test('cause 链超过 10 层时显式标注截断，而不是静默丢根因', (
   assert.match(text, /level-13/, '要继续展开多层 cause（旧实现第 6 层就静默截断）');
   assert.match(text, /已截断/, '超过上限必须显式标注，而不是静默丢根因');
 });
+
+test('lastErrorWithin：只报告时间窗内的错误（侧边栏"当前问题"红条的唯一数据源）', () => {
+  let now = Date.parse('2026-01-01T00:00:00Z');
+  const logger = createLogger({ file: null, now: () => new Date(now) });
+
+  logger.error('很久以前的问题');
+  now += 11 * 60 * 1000; // 时间推进 11 分钟
+  logger.info('普通日志');
+  assert.strictEqual(logger.lastErrorWithin(10 * 60 * 1000), null, '超出时间窗不应再显示（否则红条会永久挂着）');
+
+  logger.error('刚刚的问题');
+  assert.match(logger.lastErrorWithin(10 * 60 * 1000), /刚刚的问题/);
+  assert.strictEqual(logger.lastError(), '刚刚的问题', 'lastError() 不受时间窗影响');
+});

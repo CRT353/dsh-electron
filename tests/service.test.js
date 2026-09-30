@@ -547,3 +547,36 @@ test('终止前复验：复验仍匹配时正常终止，并清空可信 pid 集
   assert.ok(kills.includes(4242), '复验通过后应真的终止目标');
   assert.strictEqual(manager.state.trustedPids.size, 0, '清理完成后可信 pid 集合必须清空（否则只增不减）');
 });
+
+test('foreign 状态：端口有响应但不是 DSH（非 HTML）时如实上报，不认领、不重启、不清理', async () => {
+  const port = await freePort();
+  const stranger = await startServer((req, res) => {
+    res.writeHead(200, { 'Content-Type': 'text/plain' });
+    res.end('not dsh');
+  });
+  const { manager, children } = makeManager({
+    port,
+    config: { url: stranger.url },
+    probeHealth: () => probeDsh({ url: stranger.url, timeoutMs: 1000, requireHtml: true }),
+    findListenerPid: async () => ({ pid: 5555, name: 'node.exe', commandLine: 'node other-app.js' }),
+    spawn: () => { throw new Error('foreign 模式下不应拉起任何进程'); }
+  });
+
+  const snap = await manager.ensure();
+  assert.strictEqual(snap.mode, 'foreign', `端口有响应但身份未确认时应为 foreign，实际 ${snap.mode}`);
+  assert.strictEqual(snap.managed, false, '不得声称由本程序管理');
+  assert.strictEqual(snap.restartable, false);
+  assert.strictEqual(snap.forceRestartable, false, '不像 dsh 的占用者不应提供"接管并重启"');
+  assert.strictEqual(children.length, 0, '不得拉起任何进程');
+
+  const restart = await manager.restart({});
+  assert.strictEqual(restart.ok, false);
+  assert.strictEqual(restart.reason, 'foreign');
+  assert.strictEqual(await manager.killManaged('test').then((r) => r.ok), false, '不认领的服务绝不能被清理');
+
+  // 外部服务消失后应转为 stopped，并说明"外部服务已停止"（而不是留下过期的 foreign）
+  await stranger.close();
+  const after = await manager.refresh({ healthy: false, reachable: false });
+  assert.strictEqual(after.mode, 'stopped');
+  assert.match(after.lastError || '', /外部服务已停止/);
+});

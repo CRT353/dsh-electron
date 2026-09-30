@@ -19,8 +19,10 @@ const {
   isPortInUseDetailed,
   waitForPortReleased,
   findListenerPid,
-  findListenerPidDetailed
+  findListenerPidDetailed,
+  readProcessInfo
 } = require('../lib/procs');
+const { createExec } = require('../lib/exec');
 const { startServer, freePort } = require('./helpers');
 
 test('splitCommand 处理引号与空格', () => {
@@ -338,4 +340,72 @@ test('findListenerPidDetailed：区分"查询失败"与"这个端口没人监听
   });
   assert.strictEqual(otherPort.queryFailed, false, '查询成功、只是没有目标端口 ⇒ 不是查询失败');
   assert.strictEqual(otherPort.listener, null);
+});
+
+test('readProcessInfo：解析 CIM / tasklist / ps 三种输出（此前零覆盖的命令行证据链）', () => {
+  // Windows CIM（Get-CimInstance）：名字 \t 命令行
+  const winCim = readProcessInfo(4242, {
+    platform: 'win32',
+    exec: () => ({
+      ok: true,
+      stdout: 'node.exe\tC:\\nvm4w\\nodejs\\node.exe C:\\x\\node_modules\\@deepseek-ai\\dsh\\lib\\bin.js web --no-open\r\n',
+      stderr: '',
+      code: 0
+    })
+  });
+  assert.strictEqual(winCim.name, 'node.exe');
+  assert.match(winCim.commandLine, /@deepseek-ai\\dsh/);
+
+  // CIM 不可用 → 退到 tasklist：只有名字、**没有命令行**
+  // （这正是"读不到命令行 ⇒ dshLike=false ⇒ 拒绝认领自己拉起的服务"的触发条件）
+  let calls = 0;
+  const viaTasklist = readProcessInfo(4242, {
+    platform: 'win32',
+    exec: (spec) => {
+      calls += 1;
+      if (spec.file === 'tasklist') {
+        return { ok: true, stdout: '"node.exe","4242","Console","1","12,345 K"\r\n', stderr: '', code: 0 };
+      }
+      return { ok: false, stdout: '', stderr: 'CIM 不可用', code: 1 };
+    }
+  });
+  assert.strictEqual(calls, 2, '应先试 CIM 再退 tasklist');
+  assert.strictEqual(viaTasklist.name, 'node.exe');
+  assert.strictEqual(viaTasklist.commandLine, null, 'tasklist 拿不到命令行，必须如实返回 null');
+
+  // POSIX ps -p <pid> -o comm=,args=
+  const posix = readProcessInfo(4242, {
+    platform: 'linux',
+    exec: () => ({ ok: true, stdout: '/usr/bin/node --experimental-loader /opt/dsh/lib/bin.js web\n', stderr: '', code: 0 })
+  });
+  assert.strictEqual(posix.name, 'node', '名字应取 basename');
+  assert.match(posix.commandLine, /--experimental-loader/);
+
+  assert.strictEqual(readProcessInfo(4242, {}), null, '没有 exec 时返回 null');
+  assert.strictEqual(
+    readProcessInfo('abc', { exec: () => ({ ok: true, stdout: 'x', code: 0 }), platform: 'win32' }),
+    null,
+    '非法 pid 返回 null'
+  );
+  assert.strictEqual(
+    readProcessInfo(4242, { platform: 'win32', exec: () => ({ ok: false, stdout: '', stderr: 'x', code: 1 }) }),
+    null,
+    '两条来源都失败时返回 null（调用方据此按"证据不足"默认拒绝）'
+  );
+});
+
+test('createExec：任何输入都不抛异常，失败也返回结构化结果', () => {
+  // 注意：本环境（受限沙箱）禁止同步子进程管道（execFileSync 一律 EPERM），
+  // 因此"成功路径"无法在这里覆盖；这里守住的是它对调用方的契约 —— 永不抛异常。
+  const exec = createExec({ timeoutMs: 2000 });
+
+  const missing = exec({ file: 'definitely-not-a-real-binary-xyz-123' });
+  assert.strictEqual(missing.ok, false);
+  assert.ok(typeof missing.stderr === 'string' && missing.stderr.length > 0, '失败必须给出可读原因');
+  assert.strictEqual(missing.stdout, '');
+  assert.ok(typeof missing.ms === 'number');
+
+  assert.strictEqual(exec({}).ok, false, '空 spec 也不能抛异常');
+  assert.strictEqual(exec(null).ok, false, 'null spec 也不能抛异常（旧实现会在这里抛 TypeError）');
+  assert.strictEqual(exec(undefined).ok, false, 'undefined spec 也不能抛异常');
 });
