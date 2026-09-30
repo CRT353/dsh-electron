@@ -35,6 +35,7 @@ function createElectronStub() {
     openedPaths: [],
     errorBoxes: [],
     messages: [],
+    messageBoxResult: 0, // 可注入的"关闭三选"返回值：0=最小化到托盘 1=关闭并退出 2=取消
     appEvents: new Map(),
     exits: [],
     permissionHandlers: [],
@@ -168,7 +169,7 @@ function createElectronStub() {
       ipcMain: { handle: (channel, handler) => calls.ipc.set(channel, handler) },
       dialog: {
         showErrorBox: (title, content) => calls.errorBoxes.push({ title, content }),
-        showMessageBoxSync: () => { calls.messages.push(true); return 0; }
+        showMessageBoxSync: (win, options) => { calls.messages.push(options); return calls.messageBoxResult; }
       },
       shell: {
         openExternal: (url) => { calls.externalUrls.push(url); return Promise.resolve(); },
@@ -396,4 +397,206 @@ test('main.js 配置守卫：远端 DSH_URL 默认拒绝启动', async () => {
     for (const [key, value] of Object.entries(envBackup)) process.env[key] = value;
     fs.rmSync(tmp, { recursive: true, force: true });
   }
+});
+
+// ============================================================
+// 第四档补齐：以下分支此前**从未被任何用例触发过**
+// （收尾流程、关闭三选的三条分支、视图失败态、安全控件、单实例唤醒、右键菜单动作接线）
+// ============================================================
+
+/**
+ * 载入 main.js 的隔离环境：每个用例一份干净的模块状态 + 一份本地假服务
+ * （外部服务在场时 main.js 只 reuse，不会真的拉起进程）。
+ * @param {object} extraEnv 额外环境变量
+ * @param {(stub: object, ctx: {mainPath: string, server: object, logFile: string}) => Promise<void>} run
+ */
+async function withMain(extraEnv, run) {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-main-flows-'));
+  const server = await startServer();
+  const logFile = path.join(tmp, 'flows.log');
+  const envBackup = { ...process.env };
+  Object.assign(process.env, {
+    DSH_URL: server.url,
+    DSH_START_COMMAND: 'node -e "process.exit(0)"',
+    DSH_LOG_FILE: logFile,
+    DSH_POLL_INTERVAL: '60000',
+    DSH_NET_CHECK: '0'
+  }, extraEnv);
+
+  const stub = createElectronStub();
+  const originalLoad = Module._load;
+  Module._load = function patchedLoad(request, ...rest) {
+    if (request === 'electron') return stub.module;
+    return originalLoad.call(this, request, ...rest);
+  };
+  const mainPath = require.resolve('../main.js');
+  delete require.cache[mainPath];
+
+  try {
+    require(mainPath);
+    await new Promise((r) => setTimeout(r, 250));
+    await run(stub, { mainPath, server, logFile });
+  } finally {
+    // 无论断言是否失败都要走一遍退出流程，否则轮询定时器会让进程无法退出
+    try {
+      const beforeQuit = stub.calls.appEvents.get('before-quit');
+      if (beforeQuit && beforeQuit.length) beforeQuit[0]({ preventDefault: () => {} });
+      await new Promise((r) => setTimeout(r, 300));
+    } catch (_) { /* 忽略 */ }
+    Module._load = originalLoad;
+    for (const key of Object.keys(process.env)) if (!(key in envBackup)) delete process.env[key];
+    for (const [key, value] of Object.entries(envBackup)) process.env[key] = value;
+    await server.close();
+    fs.rmSync(tmp, { recursive: true, force: true });
+    delete require.cache[mainPath];
+  }
+}
+
+test('关闭三选的三条分支：取消 / 最小化到托盘 / 关闭并退出', async () => {
+  await withMain({}, async (stub) => {
+    const win = stub.calls.windows[0];
+    const emitClose = () => {
+      let prevented = false;
+      win.emit('close', { preventDefault: () => { prevented = true; } });
+      return prevented;
+    };
+
+    // ① 取消：什么都不做
+    stub.calls.messageBoxResult = 2;
+    assert.strictEqual(emitClose(), true, '询问期间必须先阻止关闭');
+    assert.strictEqual(stub.calls.messages.length, 1, '应弹出三选对话框');
+    assert.ok(Array.isArray(stub.calls.messages[0].buttons), '对话框应给出按钮');
+    assert.strictEqual(win.visible, true, '取消后窗口保持可见');
+    assert.strictEqual(stub.calls.trays[0].balloons.length, 0, '取消不应弹托盘气泡');
+
+    // ② 最小化到托盘
+    stub.calls.messageBoxResult = 0;
+    assert.strictEqual(emitClose(), true);
+    assert.strictEqual(win.visible, false, '应隐藏到托盘');
+    assert.strictEqual(stub.calls.trays[0].balloons.length, 1, '首次最小化应提示一次');
+    assert.strictEqual(stub.calls.quit, undefined, '不应退出进程');
+    win.show();
+
+    // ③ 关闭并退出：选定之后不得再次拦截（且不再重复询问）
+    stub.calls.messageBoxResult = 1;
+    assert.strictEqual(emitClose(), true, '选定那一次仍会拦一下');
+    assert.strictEqual(stub.calls.messages.length, 3);
+    assert.strictEqual(emitClose(), false, '选择"关闭并退出"之后不得再拦截');
+    assert.strictEqual(stub.calls.messages.length, 3, '不应重复询问');
+  });
+});
+
+test('window-all-closed：走收尾流程并退出（复用外部服务时不得执行清理）', async () => {
+  await withMain({}, async (stub, { logFile }) => {
+    const handlers = stub.calls.appEvents.get('window-all-closed');
+    assert.ok(handlers && handlers.length, '必须注册 window-all-closed');
+    handlers[0]();
+    await new Promise((r) => setTimeout(r, 400));
+
+    assert.strictEqual(stub.calls.quit, true, '应调用 app.quit()');
+    assert.ok(stub.calls.exits.length >= 1, '应调用 app.exit()');
+    const logText = fs.existsSync(logFile) ? fs.readFileSync(logFile, 'utf8') : '';
+    assert.match(logText, /开始退出清理/, '应记录收尾开始');
+    assert.match(logText, /跳过清理/, '复用的外部服务必须被跳过，而不是被清理');
+  });
+});
+
+test('视图失败态：主框架加载失败与渲染进程崩溃都要如实反映；子框架失败不影响主状态', async () => {
+  await withMain({}, async (stub) => {
+    const win = stub.calls.windows[0];
+    const view = stub.calls.views.find((v) => v.webContents && v.webContents.label === 'dsh-view');
+    const status = () => stub.calls.ipc.get('get-status')({ sender: { id: win.webContents.id } });
+
+    view.webContents.emit('did-fail-load', {}, -105, 'NAME_NOT_RESOLVED', 'http://127.0.0.1:1/', true);
+    let s = await status();
+    assert.strictEqual(s.viewState, 'failed');
+    assert.match(s.viewError, /NAME_NOT_RESOLVED/);
+
+    // 先回到 ready，再验证"子框架失败"不应把主视图判成失败
+    view.webContents.emit('did-finish-load');
+    s = await status();
+    assert.strictEqual(s.viewState, 'ready');
+    view.webContents.emit('did-fail-load', {}, -1, 'SUBFRAME_FAILED', 'http://x/', false);
+    s = await status();
+    assert.strictEqual(s.viewState, 'ready', '子框架（isMainFrame=false）失败不得影响主视图状态');
+
+    view.webContents.emit('render-process-gone', {}, { reason: 'crashed' });
+    s = await status();
+    assert.strictEqual(s.viewState, 'failed');
+    assert.match(s.viewError, /crashed/);
+  });
+});
+
+test('安全控件接线：will-redirect 一律拦截、will-attach-webview 一律阻止', async () => {
+  await withMain({}, async (stub) => {
+    const view = stub.calls.views.find((v) => v.webContents && v.webContents.label === 'dsh-view');
+
+    const redirect = view.webContents.handlers.get('will-redirect')[0];
+    let prevented = false;
+    redirect({ preventDefault: () => { prevented = true; } }, 'https://example.com/steal');
+    assert.strictEqual(prevented, true, '重定向不允许外跳');
+    assert.strictEqual(stub.calls.externalUrls.length, 0, '重定向不得交给系统浏览器');
+
+    const attach = view.webContents.handlers.get('will-attach-webview')[0];
+    let attachPrevented = false;
+    attach({ preventDefault: () => { attachPrevented = true; } });
+    assert.strictEqual(attachPrevented, true, 'webview 附加必须被阻止');
+  });
+});
+
+test('second-instance：唤醒并聚焦已有窗口，而不是新建一个', async () => {
+  await withMain({}, async (stub) => {
+    const win = stub.calls.windows[0];
+    win.hide();
+    assert.strictEqual(win.visible, false);
+
+    const handlers = stub.calls.appEvents.get('second-instance');
+    assert.ok(handlers && handlers.length, '必须注册 second-instance');
+    handlers[0]();
+
+    assert.strictEqual(win.visible, true, '应恢复已有窗口');
+    assert.strictEqual(stub.calls.windows.length, 1, '不得新建窗口（单实例语义）');
+  });
+});
+
+test('右键菜单动作接线：刷新视图 / 打开日志 / 复制页面地址（脱敏）/ 复制链接 / DevTools', async () => {
+  await withMain({}, async (stub, { logFile, server }) => {
+    const view = stub.calls.views.find((v) => v.webContents && v.webContents.label === 'dsh-view');
+    const clickLabel = (label, params) => {
+      view.webContents.emit('context-menu', {}, params || { editFlags: {} });
+      const menu = stub.calls.menus[stub.calls.menus.length - 1];
+      const item = menu.find((i) => i.label === label);
+      assert.ok(item, `菜单里应有「${label}」：${menu.map((i) => i.label).filter(Boolean).join('/')}`);
+      item.click();
+    };
+
+    // 刷新 DSH 视图：应重新 loadURL 到配置地址
+    view.webContents.url = '';
+    clickLabel('刷新 DSH 视图');
+    assert.strictEqual(view.webContents.url, server.url, '「刷新 DSH 视图」应重新加载配置地址');
+
+    // 打开日志：shell.openPath 收到配置里的日志路径
+    clickLabel('打开日志');
+    assert.ok(stub.calls.openedPaths.some((p) => p.endsWith('flows.log')), `应打开日志：${stub.calls.openedPaths}`);
+
+    // 复制页面地址：必须去掉查询串与凭据
+    view.webContents.url = `${server.url}/x?token=secret#frag`;
+    clickLabel('复制页面地址');
+    const pageUrl = stub.calls.clipboardWrites[stub.calls.clipboardWrites.length - 1];
+    assert.ok(!pageUrl.includes('token=secret'), `页面地址必须脱敏：${pageUrl}`);
+    assert.ok(!pageUrl.includes('#frag'));
+
+    // 复制链接地址
+    clickLabel('复制链接地址', { linkURL: 'https://example.com/a?b=1', editFlags: {} });
+    assert.strictEqual(stub.calls.clipboardWrites[stub.calls.clipboardWrites.length - 1], 'https://example.com/a?b=1');
+
+    // 开发者工具（F12）
+    const before = stub.calls.toggledDevTools;
+    clickLabel('开发者工具（F12）');
+    assert.strictEqual(stub.calls.toggledDevTools, before + 1, '应切换 DevTools');
+
+    // 日志里不应出现任何"未知的右键菜单动作"
+    const logText = fs.existsSync(logFile) ? fs.readFileSync(logFile, 'utf8') : '';
+    assert.ok(!/未知的右键菜单动作/.test(logText), '菜单动作字符串必须都能被 runContextAction 识别');
+  });
 });
