@@ -80,7 +80,50 @@ test('监听者确实是 dsh：实际停止（注入 kill，不碰真实进程�
   const result = await run({ port: 3080, ...deps });
   assert.strictEqual(result.action, 'stopped');
   assert.deepStrictEqual(killed, [{ pid: 7777 }]);
-  assert.ok(result.steps.some((s) => s.startsWith('sigterm:7777')));
+  // Windows 上第一动作是树杀 taskkill /T /F；测试里 exec 是失败桩，因此会退回 process.kill
+  assert.ok(
+    result.steps.some((s) => /^(taskkill|kill-fallback|sigterm):7777:/.test(s)),
+    `应记录针对 7777 的终止动作：${JSON.stringify(result.steps)}`
+  );
+  assert.ok(
+    result.steps.every((s) => !/:\d+:/.test(s) || s.includes(':7777:')),
+    `不得对 7777 以外的 pid 动手：${JSON.stringify(result.steps)}`
+  );
+});
+
+test('Windows 上先做树杀 taskkill /pid <pid> /T /F（旧实现永远轮不到 /T）', async () => {
+  const execCalls = [];
+  const { deps, killed } = makeDeps({
+    platform: 'win32',
+    isPortInUse: async () => true,
+    findListenerPid: async () => ({ pid: 7777, name: 'node.exe', commandLine: 'node .../dsh/lib/bin.js web --no-open' }),
+    waitForPortReleased: async () => true,
+    exec: (spec) => { execCalls.push(spec); return { ok: true, stdout: '', stderr: '' }; }
+  });
+  const result = await run({ port: 3080, ...deps });
+  assert.strictEqual(result.action, 'stopped');
+  assert.strictEqual(execCalls[0].file, 'taskkill', '第一动作必须是树杀');
+  assert.deepStrictEqual(execCalls[0].args, ['/pid', '7777', '/T', '/F']);
+  assert.ok(result.steps.includes('taskkill:7777:ok'));
+  assert.deepStrictEqual(killed, [], 'taskkill 成功时不应再退回 process.kill');
+});
+
+test('POSIX 上先 SIGTERM（存在真正的温和阶段），且不调用 taskkill', async () => {
+  const execCalls = [];
+  const killed = [];
+  const { deps } = makeDeps({
+    platform: 'linux',
+    isPortInUse: async () => true,
+    findListenerPid: async () => ({ pid: 7777, name: 'node', commandLine: 'node /opt/dsh/lib/bin.js web' }),
+    waitForPortReleased: async () => true,
+    kill: (pid, signal) => { killed.push({ pid, signal: signal || 'SIGTERM' }); },
+    exec: (spec) => { execCalls.push(spec); return { ok: true, stdout: '', stderr: '' }; }
+  });
+  const result = await run({ port: 3080, ...deps });
+  assert.strictEqual(result.action, 'stopped');
+  assert.deepStrictEqual(killed, [{ pid: 7777, signal: 'SIGTERM' }]);
+  assert.ok(result.steps.includes('sigterm:7777:ok'));
+  assert.strictEqual(execCalls.length, 0, 'POSIX 路径不应出现 taskkill');
 });
 
 test('真实端口探测：占用中的端口会被识别（避免"端口空闲"误判）', async () => {

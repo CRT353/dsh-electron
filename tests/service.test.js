@@ -75,6 +75,7 @@ function makeManager(options = {}) {
   if (options.setTimer) deps.setTimer = options.setTimer;
   // 注入 kill 是必要的安全措施：用合成 pid 的用例绝不能落到真实的 process.kill 上
   if (options.kill) deps.kill = options.kill;
+  if (options.platform) deps.platform = options.platform;
 
   const manager = new ServiceManager({
     config: { ...baseConfig(port), ...(options.config || {}) },
@@ -444,4 +445,49 @@ test('shutdown() 预算耗尽时如实返回 shutdown-timeout（不假装成功�
   const result = await manager.shutdown({ timeoutMs: 6000 });
   assert.strictEqual(result.ok, false);
   assert.strictEqual(result.reason, 'shutdown-timeout');
+});
+
+test('清理的终止策略按平台区分：Windows 先树杀（taskkill /T /F），POSIX 才用信号', async () => {
+  const port = await freePort();
+
+  // Windows：第一动作必须是 taskkill /T /F；exec 是失败桩 ⇒ 应退回 process.kill
+  const winExec = [];
+  const winKills = [];
+  const win = makeManager({
+    port,
+    platform: 'win32',
+    isPidAlive: () => true,
+    isPortInUse: async () => true,
+    waitForPortReleased: async () => true,
+    exec: (spec) => { winExec.push(spec); return { ok: false, stdout: '', stderr: 'stub' }; },
+    kill: (pid, signal) => { winKills.push({ pid, signal }); },
+    findListenerPid: async () => null
+  });
+  Object.assign(win.manager.state, { owned: true, mode: 'managed', listenerPid: 4242 });
+  const winResult = await win.manager.killManaged('test');
+  assert.strictEqual(winExec[0].file, 'taskkill', 'Windows 上第一动作必须是树杀');
+  assert.deepStrictEqual(winExec[0].args, ['/pid', '4242', '/T', '/F']);
+  assert.ok(
+    winResult.steps.includes('kill-fallback:4242:ok'),
+    `taskkill 失败时必须退回 process.kill：${JSON.stringify(winResult.steps)}`
+  );
+
+  // POSIX：先 SIGTERM，且不得出现 taskkill
+  const posixExec = [];
+  const posixKills = [];
+  const posix = makeManager({
+    port,
+    platform: 'linux',
+    isPidAlive: () => true,
+    isPortInUse: async () => true,
+    waitForPortReleased: async () => true,
+    exec: (spec) => { posixExec.push(spec); return { ok: true, stdout: '', stderr: '' }; },
+    kill: (pid, signal) => { posixKills.push({ pid, signal: signal || 'SIGTERM' }); },
+    findListenerPid: async () => null
+  });
+  Object.assign(posix.manager.state, { owned: true, mode: 'managed', listenerPid: 4242 });
+  const posixResult = await posix.manager.killManaged('test');
+  assert.ok(posixResult.steps.includes('sigterm:4242:ok'), JSON.stringify(posixResult.steps));
+  assert.strictEqual(posixExec.length, 0, 'POSIX 清理不应调用 taskkill');
+  assert.deepStrictEqual(posixKills, [{ pid: 4242, signal: 'SIGTERM' }]);
 });

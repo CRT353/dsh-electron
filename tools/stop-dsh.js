@@ -7,7 +7,8 @@
  *   2. 通过身份校验才动手——证据是"进程名在可信名单内 且 命令行匹配 DSH 入口形态"
  *      （判定模式与主程序共用 `lib/config.js#resolveKillPattern`，可用 DSH_KILL_PATTERN 覆盖）；
  *      本工具**没有**"本程序记录过的 pid"这类证据，因此只会终止命令行能确认是 DSH 的进程；
- *   3. 先 SIGTERM，等端口释放，必要时才强杀；
+ *   3. 终止策略按平台区分：Windows 用 taskkill /T /F 结束整棵进程树（process.kill 不带子进程，
+ *      且没有真正的"温和"阶段）；POSIX 先 SIGTERM，端口不让出再 SIGKILL；
  *   4. 校验不通过就明确拒绝并说明原因，绝不误杀（例如把别的 node 服务一起杀掉）。
  *
  * 用法：
@@ -125,18 +126,37 @@ async function run(options = {}) {
 
   const steps = [];
   deps.logger.info(`停止 DSH 服务：pid ${listener.pid}（${listener.name || '未知'}），判定依据 ${verdict.reason}`);
-  try {
-    deps.kill(listener.pid);
-    steps.push(`sigterm:${listener.pid}:ok`);
-  } catch (err) {
-    steps.push(`sigterm:${listener.pid}:${err && err.code ? err.code : 'error'}`);
+
+  // Windows 上 process.kill() 是强制终止且**不连带子进程**（无 POSIX 信号），因此先用
+  // taskkill /T /F 结束整棵进程树；只有 POSIX 才存在真正的"温和"阶段（SIGTERM → SIGKILL）。
+  // 旧实现两边都先 process.kill，再用"pid 是否还活着"决定要不要 taskkill —— 那时 pid 必然
+  // 已死，/T 永远轮不到，被停服务的子孙进程会残留。
+  if (deps.platform === 'win32') {
+    const res = deps.exec({ file: 'taskkill', args: ['/pid', String(listener.pid), '/T', '/F'], timeoutMs: 8000 });
+    steps.push(`taskkill:${listener.pid}:${res && res.ok ? 'ok' : 'failed'}`);
+    if (!res || !res.ok) {
+      // 拿不到 taskkill（受限终端等）时退回 process.kill，保证"至少把目标本身停掉"
+      try {
+        deps.kill(listener.pid);
+        steps.push(`kill-fallback:${listener.pid}:ok`);
+      } catch (err) {
+        steps.push(`kill-fallback:${listener.pid}:${err && err.code ? err.code : 'error'}`);
+      }
+    }
+  } else {
+    try {
+      deps.kill(listener.pid);
+      steps.push(`sigterm:${listener.pid}:ok`);
+    } catch (err) {
+      steps.push(`sigterm:${listener.pid}:${err && err.code ? err.code : 'error'}`);
+    }
   }
 
   let released = await deps.waitForPortReleased(port, host, { timeoutMs: 4000 });
   if (!released && deps.isPidAlive(listener.pid)) {
     if (deps.platform === 'win32') {
       const res = deps.exec({ file: 'taskkill', args: ['/pid', String(listener.pid), '/T', '/F'], timeoutMs: 8000 });
-      steps.push(`taskkill:${listener.pid}:${res && res.ok ? 'ok' : 'failed'}`);
+      steps.push(`taskkill-retry:${listener.pid}:${res && res.ok ? 'ok' : 'failed'}`);
     } else {
       try {
         deps.kill(listener.pid, 'SIGKILL');
