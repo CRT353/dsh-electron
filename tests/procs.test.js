@@ -15,9 +15,13 @@ const {
   pickListener,
   isPidAlive,
   decideKill,
+  isPortInUse,
+  isPortInUseDetailed,
   waitForPortReleased,
-  findListenerPid
+  findListenerPid,
+  findListenerPidDetailed
 } = require('../lib/procs');
+const { startServer, freePort } = require('./helpers');
 
 test('splitCommand 处理引号与空格', () => {
   assert.deepStrictEqual(splitCommand('dsh web --no-open'), ['dsh', 'web', '--no-open']);
@@ -286,4 +290,52 @@ test('DSH 身份判定模式：不误杀路径含 dsh 的无关服务，也不�
     assert.strictEqual(verdict.allowed, false, `不该把无关服务判成 DSH: ${commandLine}`);
     assert.strictEqual(verdict.reason, 'commandline-mismatch', commandLine);
   }
+});
+
+test('isPortInUseDetailed：区分"确定空闲 / 在用 / 不知道"（旧实现把超时当成空闲）', async () => {
+  const server = await startServer();
+  try {
+    assert.strictEqual((await isPortInUseDetailed(server.port, '127.0.0.1', 500)).state, 'in-use');
+    assert.strictEqual(await isPortInUse(server.port, '127.0.0.1', 500), true, '旧签名的语义保持不变');
+  } finally {
+    await server.close();
+  }
+
+  const port = await freePort();
+  assert.strictEqual((await isPortInUseDetailed(port, '127.0.0.1', 500)).state, 'free', '连接被拒绝 = 确定空闲');
+  assert.strictEqual(await isPortInUse(port, '127.0.0.1', 500), false);
+
+  // 不可达主机（TEST-NET-1）：旧实现把错误一律当成"端口空闲"，
+  // 于是 stop-dsh 会打印"无人监听，无需停止"并 exit 0（服务其实还在跑）。
+  assert.strictEqual(
+    (await isPortInUseDetailed(port, '192.0.2.1', 300)).state,
+    'unknown',
+    '不可达/超时必须报"不知道"，绝不能报"确定空闲"'
+  );
+});
+
+test('findListenerPidDetailed：区分"查询失败"与"这个端口没人监听"', () => {
+  const failed = findListenerPidDetailed(3080, {
+    exec: () => ({ ok: false, stdout: '', stderr: 'spawnSync netstat EPERM', code: null }),
+    platform: 'win32',
+    host: '127.0.0.1'
+  });
+  assert.strictEqual(failed.listener, null);
+  assert.strictEqual(failed.queryFailed, true, '执行失败必须与"没人监听"区分开');
+  assert.match(failed.reason, /EPERM|netstat/, failed.reason);
+
+  const emptyOutput = findListenerPidDetailed(3080, {
+    exec: () => ({ ok: true, stdout: '', stderr: '', code: 0 }),
+    platform: 'win32',
+    host: '127.0.0.1'
+  });
+  assert.strictEqual(emptyOutput.queryFailed, true, '输出里没有任何监听项 ⇒ 结论不可信');
+
+  const otherPort = findListenerPidDetailed(3080, {
+    exec: () => ({ ok: true, stdout: '  TCP    127.0.0.1:9999    0.0.0.0:0    LISTENING    1234', stderr: '', code: 0 }),
+    platform: 'win32',
+    host: '127.0.0.1'
+  });
+  assert.strictEqual(otherPort.queryFailed, false, '查询成功、只是没有目标端口 ⇒ 不是查询失败');
+  assert.strictEqual(otherPort.listener, null);
 });

@@ -82,3 +82,53 @@ test('detectTransitions 只在翻转时产生事件', () => {
   assert.deepStrictEqual(detectTransitions({ dsh: true, net: true }, { dsh: false, net: true }), [{ kind: 'dsh', from: true, to: false }]);
   assert.strictEqual(detectTransitions({ dsh: null, net: null }, { dsh: true, net: true }).length, 0, '初始状态不通知');
 });
+
+test('probeDsh：不跟随重定向 —— 302 → HTML 登录页不得被认证成 DSH', async () => {
+  const redirectToHtml = await startServer((req, res) => {
+    if (req.url === '/login') {
+      res.writeHead(200, { 'Content-Type': 'text/html' });
+      res.end('<h1>请登录</h1>');
+    } else {
+      res.writeHead(302, { Location: '/login' });
+      res.end();
+    }
+  });
+  const redirectLoop = await startServer((req, res) => {
+    res.writeHead(302, { Location: '/loop' });
+    res.end();
+  });
+  try {
+    // 旧实现会跟随重定向，用终点的 200 text/html 判成 identity=strong
+    // —— 等于任何"3xx 到 HTML 页"的陌生服务都绕过了身份确认。
+    const viaRedirect = await probeDsh({ url: redirectToHtml.url, timeoutMs: 2000, requireHtml: true });
+    assert.strictEqual(viaRedirect.ok, false, '重定向终点是 HTML 也不能算身份确认');
+    assert.notStrictEqual(viaRedirect.identity, 'strong');
+    assert.strictEqual(viaRedirect.status, 302);
+    assert.strictEqual(viaRedirect.reason, 'http-302-redirect');
+    assert.strictEqual(viaRedirect.reachable, true, '服务器确实回了话 → reachable 必须为 true');
+
+    // 重定向成环：旧实现 fetch 抛错 → reachable=false，服务生命周期会以为"端口没人"
+    const loop = await probeDsh({ url: redirectLoop.url, timeoutMs: 2000, requireHtml: true });
+    assert.strictEqual(loop.reachable, true, '收到 3xx 就说明服务器在，不能报"不可达"');
+    assert.strictEqual(loop.ok, false, '但身份未经确认');
+  } finally {
+    await redirectToHtml.close();
+    await redirectLoop.close();
+  }
+});
+
+test('probeInternet：4xx/5xx/重定向（典型强制门户）不得算"网络在线"', async () => {
+  const notFound = await startServer((req, res) => { res.writeHead(404); res.end('nope'); });
+  const serverError = await startServer((req, res) => { res.writeHead(500); res.end('boom'); });
+  const redirect = await startServer((req, res) => { res.writeHead(302, { Location: 'http://example.com/' }); res.end(); });
+  try {
+    assert.strictEqual((await probeInternet({ url: notFound.url, timeoutMs: 2000 })).ok, false, '404 不得算在线');
+    assert.strictEqual((await probeInternet({ url: serverError.url, timeoutMs: 2000 })).ok, false, '500 不得算在线');
+    assert.strictEqual((await probeInternet({ url: redirect.url, timeoutMs: 2000 })).ok, false, '重定向（典型门户）不得算在线');
+    // 已知局限：门户返回 200 + HTML 登录页时，仅凭状态码无法与真实响应区分（未在此装作已解决）
+  } finally {
+    await notFound.close();
+    await serverError.close();
+    await redirect.close();
+  }
+});

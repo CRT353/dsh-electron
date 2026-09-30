@@ -126,6 +126,23 @@ test('POSIX 上先 SIGTERM（存在真正的温和阶段），且不调用 taskk
   assert.strictEqual(execCalls.length, 0, 'POSIX 路径不应出现 taskkill');
 });
 
+test('端口探测不确定时不得谎报"无人监听，无需停止"', async () => {
+  const { deps } = makeDeps({
+    isPortInUseDetailed: async () => ({ state: 'unknown' }),
+    findListenerPid: async () => null
+  });
+  const result = await run({ port: 3080, ...deps });
+  assert.notStrictEqual(result.action, 'none', '探测不确定时不能报告"无需停止"');
+  assert.strictEqual(result.reason, 'listener-unknown', '应继续尝试识别监听者，识别不到就明确拒绝动手');
+});
+
+test('端口确实空闲时才报告"无需停止"', async () => {
+  const { deps } = makeDeps({ isPortInUseDetailed: async () => ({ state: 'free' }) });
+  const result = await run({ port: 3080, ...deps });
+  assert.strictEqual(result.action, 'none');
+  assert.strictEqual(result.reason, 'port-free');
+});
+
 test('真实端口探测：占用中的端口会被识别（避免"端口空闲"误判）', async () => {
   const server = await startServer();
   try {

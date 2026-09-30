@@ -17,9 +17,10 @@
 
 const path = require('path');
 const os = require('os');
+const net = require('net');
 
 const { createExec } = require('../lib/exec');
-const { buildSpawnPlan, findListenerPid, isPidAlive, isPortInUse, waitForPortReleased } = require('../lib/procs');
+const { buildSpawnPlan, findListenerPid, findListenerPidDetailed, isPidAlive, isPortInUse, waitForPortReleased } = require('../lib/procs');
 const { probeDsh } = require('../lib/health');
 const { ServiceManager } = require('../lib/service');
 const { createLogger } = require('../lib/log');
@@ -56,26 +57,39 @@ async function freePort() {
   });
 }
 
-/** 只读检查：谁在监听这个端口（不做任何终止动作） */
+/**
+ * 只读检查：谁在监听这个端口（不做任何终止动作）。
+ * 明确区分三种结果：查到监听者 / 端口确实空闲 / **查询能力不可用**。
+ * 旧实现把后两者合并成一句"未查到监听者"，并让 `--inspect` 以 0 退出 ——
+ * 在拿不到 netstat 的环境里，这会让人得出"端口空闲"的错误结论（而服务其实在跑）。
+ * @returns {{listener: object|null, queryFailed: boolean, reason?: string}}
+ */
 function inspectPort(port) {
   console.log(`\n=== 只读检查：端口 ${port} 的监听者 ===`);
-  const listener = findListenerPid(port, { exec, host: '127.0.0.1' });
+  const result = findListenerPidDetailed(port, { exec, host: '127.0.0.1' });
+  if (result.queryFailed) {
+    console.log(`  ✖ 查询能力不可用：${result.reason}`);
+    console.log('    注意：这不是"端口空闲"——本次检查没有得出任何结论，请在普通终端重试。');
+    return result;
+  }
+  const listener = result.listener;
   if (!listener) {
-    console.log('  未查到监听者（端口空闲，或本机 netstat/ps/lsof 不可用，或被安全策略限制）');
-    return null;
+    console.log('  端口空闲（查询正常完成，该端口当前没有监听者）');
+    return result;
   }
   console.log(`  pid      : ${listener.pid}`);
   console.log(`  name     : ${listener.name || '未知'}`);
   console.log(`  命令行   : ${listener.commandLine ? listener.commandLine.slice(0, 200) : '读取失败（可能导致清理时默认拒绝）'}`);
-  return listener;
+  return result;
 }
 
 async function main() {
   const args = parseArgs(process.argv.slice(2));
 
   if (args.inspect) {
-    inspectPort(args.inspect);
-    process.exit(0);
+    const inspected = inspectPort(args.inspect);
+    // 查询失败时以非 0 退出：让脚本/CI 不会把"我没查到"当成"端口没人"
+    process.exit(inspected.queryFailed ? 3 : 0);
   }
 
   console.log('=== 1. 命令解析（Windows 上必须解析出 .cmd 垫片，且不使用 shell:true）===');
@@ -90,11 +104,38 @@ async function main() {
   }
 
   console.log('\n=== 2. 系统进程查询能力（清理链路的第 3 级兜底依赖它）===');
-  const probeListener = inspectPort(3080);
-  record('能读取端口监听者信息（netstat/ps + 命令行）', Boolean(probeListener && probeListener.commandLine),
-    probeListener ? `pid=${probeListener.pid} name=${probeListener.name}` : '查询失败');
-  if (!probeListener) {
-    console.log('  提示：若这里是 FAIL，请在该终端直接运行本脚本；受限沙箱会禁止子进程管道。');
+  // 用**自建**的临时监听来做能力探测，而不是去查 3080：
+  // 旧实现把"3080 此刻正被监听且命令行可读"当成通过条件 —— 在没跑 DSH 的机器上
+  // （新克隆 / CI / 刚 npm stop）必然记 FAIL 并以退出码 1 结束，把"这台机器没起服务"
+  // 伪装成"代码有问题"，还会把人引向排查 netstat/ps 链路。
+  const probePort = await freePort();
+  const probeServer = net.createServer();
+  let capability = { listener: null, queryFailed: true, reason: '未能建立探测用监听' };
+  try {
+    await new Promise((resolve, reject) => {
+      probeServer.once('error', reject);
+      probeServer.listen(probePort, '127.0.0.1', resolve);
+    });
+    capability = inspectPort(probePort);
+  } catch (err) {
+    console.log(`  探测用监听建立失败：${err && err.message ? err.message : err}`);
+  } finally {
+    await new Promise((resolve) => probeServer.close(resolve));
+  }
+  const capabilityOk = capability.queryFailed === false;
+  record(
+    '进程查询能力可用（netstat/ps 可执行）',
+    capabilityOk,
+    capabilityOk
+      ? `pid=${capability.listener && capability.listener.pid} name=${(capability.listener && capability.listener.name) || '未知'}`
+      : capability.reason
+  );
+  if (capabilityOk && capability.listener && !capability.listener.commandLine) {
+    record('命令行可读（身份校验依赖它）', false, '能查到进程但读不到命令行：清理时会默认拒绝，需人工确认');
+  }
+  if (!capabilityOk) {
+    console.log('  提示：这一项失败说明当前终端拿不到进程查询能力（受限沙箱会禁止子进程管道），');
+    console.log('        与代码无关 —— 请在**普通终端**重新运行 npm run selftest。');
   }
 
   // 步骤 3/4 共用：走完"拉起 → 认领 → 清理 → 端口释放"并记录结果
@@ -159,7 +200,12 @@ async function main() {
 
   console.log(`\n=== 3. 用假服务走完整生命周期（直接启动，端口 ${port}）===`);
   const dummy = path.join(__dirname, '..', 'tests', 'dummy-server.js');
-  await lifecycleCheck('直接启动', port, buildSpawnPlan(`${process.execPath} "${dummy}"`, {}));
+  // 注意：必须给 process.execPath 加引号。Node 默认装在 "C:\Program Files\nodejs\"，
+  // 不加引号时 splitCommand 会把它拆成 ["C:\Program", "Files\nodejs\node.exe", ...]，
+  // resolved=false 并退化成 cmd 包装 → cmd 报 "'C:\Program' 不是内部或外部命令"，
+  // 于是"直接启动"整段生命周期全 FAIL，而排查方向会被误导到产品代码上。
+  // （第 4 节的 cmd 包装场景本来就带了引号，这里补齐。）
+  await lifecycleCheck('直接启动', port, buildSpawnPlan(`"${process.execPath}" "${dummy}"`, {}));
 
   // 旧版最致命的场景：Windows 上 dsh 是 .cmd 垫片，真正拉起服务的是 cmd.exe 包装进程，
   // 真服务是它的子进程 —— 当时 kill 包装进程 pid 永远杀不掉服务。这里显式复现该条件。
@@ -184,10 +230,13 @@ async function main() {
   for (const r of results) console.log(`  ${r.ok ? '✔' : '✖'} ${r.name}${r.detail ? ` — ${r.detail}` : ''}`);
   console.log(`  合计 ${results.length} 项，失败 ${failed.length} 项`);
 
-  // 受限环境识别：沙箱/受限 shell 会禁止子进程管道，此时结论不代表代码有问题
-  const environmentLimited = logger.tail(400).some((l) => /EPERM|EACCES|not permitted/i.test(l));
+  // 受限环境识别：以"进程查询能力探测"的**精确结果**为准。
+  // 旧实现对整个日志环形缓冲做 EPERM|EACCES 关键词匹配，而被测服务自身的 stderr 也会
+  // 进入同一个缓冲 —— 服务输出里出现一次 EACCES 就能把真实的代码缺陷误导成
+  // "与代码无关的环境问题"（并让退出码从 1 变成 3）。
+  const environmentLimited = !capabilityOk;
   if (environmentLimited) {
-    console.log('\n  ⚠ 检测到受限执行环境（子进程管道被禁止：spawn EPERM）。');
+    console.log(`\n  ⚠ 进程查询能力不可用：${capability.reason}`);
     console.log('    这一类失败与代码无关：请在**普通终端**（非受限沙箱）中重新运行 npm run selftest。');
   }
 

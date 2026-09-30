@@ -20,7 +20,7 @@
 const path = require('path');
 
 const { createExec } = require('../lib/exec');
-const { findListenerPid, isPidAlive, isPortInUse, waitForPortReleased, decideKill } = require('../lib/procs');
+const { findListenerPid, isPidAlive, isPortInUse, isPortInUseDetailed, waitForPortReleased, decideKill } = require('../lib/procs');
 const { createLogger } = require('../lib/log');
 const { resolveKillPattern } = require('../lib/config');
 
@@ -65,11 +65,15 @@ function parseArgs(argv) {
  * @returns {Promise<{action:string, reason?:string, pid?:number, steps?:string[]}>}
  */
 async function run(options = {}) {
+  // 调用方是否注入了自定义的布尔探测（老测试都是这么注入的）。若注入了，
+  // 就不要默认启用详细版 —— 否则注入隔离会被真实探测覆盖（测试会真的去探生产端口）。
+  const customBoolProbe = typeof options.isPortInUse === 'function';
   const deps = {
     exec: options.exec || createExec(),
     findListenerPid: options.findListenerPid,
     isPidAlive: options.isPidAlive || isPidAlive,
     isPortInUse: options.isPortInUse || isPortInUse,
+    isPortInUseDetailed: options.isPortInUseDetailed || (customBoolProbe ? null : isPortInUseDetailed),
     waitForPortReleased: options.waitForPortReleased || waitForPortReleased,
     kill: options.kill || ((pid, signal) => process.kill(pid, signal)),
     platform: options.platform || process.platform,
@@ -88,10 +92,17 @@ async function run(options = {}) {
   const host = hostRaw === '' ? DEFAULT_HOST : hostRaw;
   const dryRun = Boolean(options.dryRun);
 
-  const inUse = await deps.isPortInUse(port, host, 800);
-  if (!inUse) {
+  // 端口状态必须区分"确定空闲"与"探测失败"：旧实现把超时当成空闲，
+  // 于是打印"无人监听，无需停止"并 exit 0，而服务其实还在跑（只是没应答）。
+  const portState = deps.isPortInUseDetailed
+    ? (await deps.isPortInUseDetailed(port, host, 800)).state
+    : ((await deps.isPortInUse(port, host, 800)) ? 'in-use' : 'free');
+  if (portState === 'free') {
     deps.logger.info(`端口 ${host}:${port} 无人监听，无需停止`);
     return { action: 'none', reason: 'port-free' };
+  }
+  if (portState === 'unknown') {
+    deps.logger.warn(`端口 ${host}:${port} 探测超时或不可达：无法确认是否有人在监听，按"可能仍在运行"继续处理`);
   }
 
   const resolve = deps.findListenerPid || ((p, h) => findListenerPid(p, { host: h, exec: deps.exec }));
