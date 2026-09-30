@@ -446,7 +446,8 @@ async function withMain(extraEnv, run) {
     Module._load = originalLoad;
     for (const key of Object.keys(process.env)) if (!(key in envBackup)) delete process.env[key];
     for (const [key, value] of Object.entries(envBackup)) process.env[key] = value;
-    await server.close();
+    // 用例可能自己提前关掉了服务，这里要容忍重复关闭
+    try { await server.close(); } catch (_) { /* 忽略 */ }
     fs.rmSync(tmp, { recursive: true, force: true });
     delete require.cache[mainPath];
   }
@@ -598,5 +599,31 @@ test('右键菜单动作接线：刷新视图 / 打开日志 / 复制页面地�
     // 日志里不应出现任何"未知的右键菜单动作"
     const logText = fs.existsSync(logFile) ? fs.readFileSync(logFile, 'utf8') : '';
     assert.ok(!/未知的右键菜单动作/.test(logText), '菜单动作字符串必须都能被 runContextAction 识别');
+  });
+});
+
+test('托盘翻转通知：窗口隐藏时服务状态翻转弹一次气泡，且不重复弹', async () => {
+  // DSH_POLL_INTERVAL 的下限是 1000ms（config 会收敛），DSH_FAIL_THRESHOLD=1 让首次失败即翻红。
+  // 顺序很重要：必须先隐藏窗口、再让服务消失 —— 否则翻转发生在窗口可见时，
+  // 等隐藏之后再等就永远没有"新翻转"了（这条用例第一版就是这么写错的）。
+  await withMain({ DSH_POLL_INTERVAL: '1000', DSH_FAIL_THRESHOLD: '1' }, async (stub, { server }) => {
+    const win = stub.calls.windows[0];
+    const tray = stub.calls.trays[0];
+    assert.ok(tray, '应存在托盘');
+
+    win.hide();
+    await server.close();
+    await new Promise((r) => setTimeout(r, 1500));
+
+    const titles = tray.balloons.map((b) => b.title);
+    assert.ok(titles.includes('DSH 服务异常'), `窗口隐藏且服务异常翻转时应弹气泡：${JSON.stringify(tray.balloons)}`);
+
+    // 状态不再翻转时不得反复弹
+    const countAfterFlip = tray.balloons.length;
+    await new Promise((r) => setTimeout(r, 1300));
+    assert.strictEqual(tray.balloons.length, countAfterFlip, '同一状态不得重复弹气泡');
+
+    // 说明：README 声称"窗口可见时交给侧边栏、不打扰"，那条分支未在此断言
+    //（需要一次发生在窗口可见期间的翻转，本用例只构造一次翻转）。
   });
 });
