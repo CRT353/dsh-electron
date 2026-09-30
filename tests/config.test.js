@@ -21,6 +21,20 @@ test('默认配置：本机 3080 + dsh web --no-open，无致命错误', () => {
   assert.ok(config.logFile.endsWith('load-status.log'));
 });
 
+test('bool() 容忍空白：cmd 的 `set VAR=1 && ...` 不得让程序拒绝启动或静默置反开关', () => {
+  // cmd.exe 会把 && 前的空格带进变量值 → "1 "。旧实现不容忍空白：
+  //   - DSH_ALLOW_REMOTE="1 " ⇒ 远端目标仍被"配置错误"拒绝启动（用户已按文档设置）
+  //   - DSH_NET_CHECK="1 "   ⇒ 外网探活被静默关闭
+  const remote = loadConfig({ DSH_URL: 'http://example.com:3080', DSH_ALLOW_REMOTE: '1 ' }, { root: 'C:\\app' });
+  assert.strictEqual(remote.allowRemote, true);
+  assert.strictEqual(remote.fatalError, null, '用户已显式放行，不应再报配置错误');
+
+  assert.strictEqual(loadConfig({ DSH_NET_CHECK: '1 ' }, { root: 'C:\\app' }).netCheck, true);
+  assert.strictEqual(loadConfig({ DSH_DEVTOOLS: ' TRUE ' }, { root: 'C:\\app' }).devtools, true);
+  assert.strictEqual(loadConfig({ DSH_NET_CHECK: ' 0 ' }, { root: 'C:\\app' }).netCheck, false);
+  assert.strictEqual(loadConfig({ DSH_NET_CHECK: '   ' }, { root: 'C:\\app' }).netCheck, true, '空白按未设置处理，用默认值');
+});
+
 test('打包态（app.asar 内）默认日志路径换到可写目录，而不是写不进去的 asar', () => {
   const root = 'C:\\Program Files\\DSH Desktop\\resources\\app.asar';
   const userDataDir = 'C:\\Users\\x\\AppData\\Roaming\\DSH Desktop';

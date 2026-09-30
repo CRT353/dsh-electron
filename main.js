@@ -208,7 +208,28 @@ function maybeLoadDshView(reason) {
 }
 
 // ---------- 轮询 ----------
+let pollInFlight = false;
+
+/**
+ * 带重入保护的轮询入口。
+ * setInterval 不会等上一轮结束，而单轮耗时可以是 checkTimeoutMs 加上一次进程查询；
+ * 文档允许 DSH_POLL_INTERVAL=1000 与 DSH_CHECK_TIMEOUT=30000 同时设置且两者互不校验，
+ * 于是会堆积多个在途探测与 netstat 调用，并且 FlapGuard 会被**乱序返回的过期结果**驱动。
+ */
 async function pollStatus() {
+  if (pollInFlight) {
+    logger.warn('上一轮状态轮询尚未结束，跳过本轮（避免探测与系统命令堆积）');
+    return;
+  }
+  pollInFlight = true;
+  try {
+    await pollStatusOnce();
+  } finally {
+    pollInFlight = false;
+  }
+}
+
+async function pollStatusOnce() {
   const [dshResult, netResult] = await Promise.all([
     probeDsh({ url: config.url, timeoutMs: config.checkTimeoutMs, requireHtml: config.requireHtml }),
     config.netCheck
@@ -677,7 +698,15 @@ function bootstrap() {
     registerIpc();
     createTray();
     createWindow();      // 窗口立即出现，不被服务启动阻塞
-    pollStatus();
+    // 初始轮询也接上 catch：旧实现是裸调用，异常会变成未处理的 Promise 拒绝，
+    // 而在打包环境里 stderr 不可见 ⇒ 首轮真出问题也没有任何痕迹。
+    pollStatus().catch((err) => logger.error('首轮状态轮询异常', err));
+    if (config.checkTimeoutMs * 2 > config.pollIntervalMs) {
+      logger.warn(
+        `单轮探测超时（${config.checkTimeoutMs}ms）接近或超过轮询间隔（${config.pollIntervalMs}ms）：` +
+        `轮询会自动跳过重叠轮次；如需更密集的探测，请同时调小 DSH_CHECK_TIMEOUT。`
+      );
+    }
     pollTimer = setInterval(() => { pollStatus().catch((err) => logger.error('轮询异常', err)); }, config.pollIntervalMs);
     service.ensure().catch((err) => logger.error('服务启动流程异常', err));
 
