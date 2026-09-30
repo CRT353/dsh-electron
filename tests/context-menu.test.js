@@ -49,13 +49,16 @@ test('可编辑输入框提供粘贴与粘贴为纯文本，并按 editFlags 控
   assert.ok(find(items, 'select-all'));
 });
 
-test('只读输入框不提供剪切', () => {
+test('只读/不可编辑区域：靠 editFlags.canCut=false 禁用剪切', () => {
+  // 旧测试用的是 { isEditable: true, isReadOnly: true }：isReadOnly 在 Electron 的
+  // ContextMenuParams 里并不存在（已核对 electron.d.ts），这个组合在真实事件里不可能出现，
+  // 于是"只读保护"实际上从未被验证过。现在按真实契约来：只读区域 Chromium 会报 canCut=false。
   const items = buildContextMenu({
-    params: { isEditable: true, isReadOnly: true, selectionText: 'x', editFlags: { canCut: true, canCopy: true } },
+    params: { isEditable: true, selectionText: 'x', editFlags: { canCut: false, canCopy: true } },
     options: { scope: 'dsh-view' }
   });
-  assert.strictEqual(find(items, 'cut').enabled, false, '只读区域剪切必须禁用');
-  assert.strictEqual(find(items, 'copy').enabled, true);
+  assert.strictEqual(find(items, 'cut').enabled, false, 'canCut=false 时剪切必须禁用');
+  assert.strictEqual(find(items, 'copy').enabled, true, '复制仍可用');
 });
 
 test('链接菜单：http(s) 可打开，危险协议只显示被阻止的说明', () => {

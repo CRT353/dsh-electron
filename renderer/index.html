@@ -2,9 +2,14 @@
 <html lang="zh-CN">
 <head>
   <meta charset="UTF-8" />
+  <!--
+    注意：frame-ancestors 通过 <meta> 投递会被浏览器按规范忽略（Chromium 会打印
+    "ignored when delivered via a meta element"），所以这里不再写它 —— 免得看起来有防嵌套
+    而实际没有。真正的防嵌套只能靠 HTTP 响应头，本页是 file:// 本地页，够用。
+  -->
   <meta
     http-equiv="Content-Security-Policy"
-    content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
+    content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'"
   />
   <title>DSH</title>
   <link rel="stylesheet" href="sidebar.css" />
@@ -63,7 +68,7 @@
       <button id="btn-log" class="btn btn-ghost">打开日志</button>
     </div>
 
-    <div class="footer">状态每 5 秒自动检测</div>
+    <div class="footer">状态自动定期检测（间隔可用 DSH_POLL_INTERVAL 调整）</div>
   </aside>
   <script src="sidebar.js"></script>
 </body>

@@ -14,6 +14,13 @@
   const metaUrl = $('meta-url'), metaSource = $('meta-source'), metaPid = $('meta-pid'), metaTime = $('meta-time');
   const btnReload = $('btn-reload'), btnRestart = $('btn-restart'), btnAdopt = $('btn-adopt'), btnLog = $('btn-log');
 
+  // "操作进行中"标记：禁用态的所有权归 render()（由状态推导），但操作期间优先。
+  // 旧实现里 btnAdopt 的 finally 会无条件 disabled=false、btnRestart 会在操作期间被
+  // 轮询推送重新启用 —— 按钮与实际状态自相矛盾（可重复提交、弹假失败提示、
+  // 文案卡在"重启中…"最长一个就绪超时周期）。
+  let restartBusy = false;
+  let adoptBusy = false;
+
   function setDot(el, kind) {
     el.className = 'dot ' + kind; // ok | warn | bad
   }
@@ -141,13 +148,13 @@
     }
 
     // 按钮可用性
-    btnRestart.disabled = !s.restartable;
+    btnRestart.disabled = restartBusy || !s.restartable;
     btnRestart.title = s.restartable
       ? '重启本程序管理的 DSH 服务'
       : (s.mode === 'reuse' ? 'DSH 由外部启动；如需本程序管理，请用"接管并重启"' : '当前状态不可重启');
 
     // 接管按钮始终可见（灰显比隐藏更好找），只在"端口被外部 dsh 占用"时可用
-    btnAdopt.disabled = !s.forceRestartable;
+    btnAdopt.disabled = adoptBusy || !s.forceRestartable;
     btnAdopt.title = s.forceRestartable
       ? '终止当前监听端口的外部 dsh 进程，并由本程序接管拉起（会先终止该进程）'
       : (s.managed
@@ -174,6 +181,7 @@
   });
 
   btnRestart.addEventListener('click', async () => {
+    restartBusy = true;
     btnRestart.disabled = true;
     const original = btnRestart.textContent;
     btnRestart.textContent = '重启中…';
@@ -182,11 +190,13 @@
       if (res && res.ok) showNotice('服务已重启', false);
       else showNotice('重启未完成：' + ((res && (res.message || res.reason)) || '未知原因'), true);
     } finally {
+      restartBusy = false; // 只解除"操作中"；禁用态仍由 render() 按最新状态决定
       btnRestart.textContent = original;
     }
   });
 
   btnAdopt.addEventListener('click', async () => {
+    adoptBusy = true;
     btnAdopt.disabled = true;
     const original = btnAdopt.textContent;
     btnAdopt.textContent = '接管中…';
@@ -195,8 +205,10 @@
       if (res && res.ok) showNotice('已接管外部 dsh 进程并重启', false);
       else showNotice('接管失败：' + ((res && (res.message || res.reason)) || '未知原因'), true);
     } finally {
+      // 旧实现在这里无条件 `disabled = false`，会在状态推送已把按钮置灰之后又把它点亮，
+      // 造成约一个轮询周期内"title 说无需接管、按钮却可点"的矛盾窗口。
+      adoptBusy = false;
       btnAdopt.textContent = original;
-      btnAdopt.disabled = false;
     }
   });
 

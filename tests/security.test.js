@@ -76,6 +76,45 @@ test('decidePermission：默认拒绝，仅放行白名单且必须同源', () =
   assert.strictEqual(explicit.reason, 'explicit-allowlist');
 });
 
+test('decidePermission：来源证据缺失 / 跨源子框架一律拒绝（旧实现在这两种情况下会放行）', () => {
+  // Electron 对**跨源子框架**的权限检查故意不提供 requestingUrl（见 electron.d.ts 中
+  // PermissionCheckHandlerHandlerDetails 的注释），旧实现此时直接跳过同源闸门。
+  const noEvidence = decidePermission({ permission: 'clipboard-sanitized-write', requestingUrl: null, appUrl: APP });
+  assert.strictEqual(noEvidence.allow, false, '没有来源证据就不该放行');
+  assert.strictEqual(noEvidence.reason, 'no-origin-evidence');
+
+  // 主框架 + 无来源证据：仍按白名单放行，避免误伤本应用自己的页面
+  const mainFrame = decidePermission({
+    permission: 'clipboard-sanitized-write',
+    requestingUrl: null,
+    isMainFrame: true,
+    appUrl: APP
+  });
+  assert.strictEqual(mainFrame.allow, true);
+
+  // 跨源子框架：即使声称的来源是同源也要拒绝
+  const subframe = decidePermission({
+    permission: 'clipboard-sanitized-write',
+    requestingUrl: APP,
+    isMainFrame: false,
+    embeddingOrigin: 'https://evil.com',
+    appUrl: APP
+  });
+  assert.strictEqual(subframe.allow, false);
+  assert.strictEqual(subframe.reason, 'cross-origin-subframe');
+
+  // 即使用 DSH_ALLOW_PERMISSIONS 放开了 media，跨源子框架也拿不到
+  const widened = decidePermission({
+    permission: 'media',
+    requestingUrl: APP,
+    isMainFrame: false,
+    embeddingOrigin: 'https://evil.com',
+    appUrl: APP,
+    allowExtra: ['media']
+  });
+  assert.strictEqual(widened.allow, false, '白名单不得绕过来源校验');
+});
+
 test('parsePermissionList / describePolicy', () => {
   assert.deepStrictEqual(parsePermissionList('media, geolocation ,'), ['media', 'geolocation']);
   assert.deepStrictEqual(parsePermissionList(''), []);

@@ -86,13 +86,14 @@ DevTools、服务操作、"复制状态摘要"），不想记快捷键时可以�
 | 导航 | DSH 视图仅允许**同源**在应用内导航；`will-navigate` / `will-redirect` / `window.open` 全部过策略；其他 http(s) 交系统浏览器；重定向不允许外跳；`file:` / `javascript:` / `data:` / `about:` / `ms-*` 等协议一律阻止并记日志 | `lib/security.js#decideNavigation` |
 | 外链 | `shell.openExternal` 只接受 `http:`/`https:`（可用 `DSH_EXTERNAL_SCHEMES` 调整），其余拒绝 | `lib/security.js#decideOpenExternal` |
 | 右键菜单 | 菜单模板在主进程生成，页面无法注入条目；"打开链接"复用外链协议白名单，被阻止时只给不可点的说明；动作通过 webContents 方法显式作用于触发者 | `lib/context-menu.js`、`main.js#showContextMenu` |
-| 权限 | `setPermissionRequestHandler` + `setPermissionCheckHandler` **默认拒绝**摄像头/麦克风/地理/通知/HID/串口/USB/剪贴板读取等；仅放行 `clipboard-sanitized-write` 且必须同源；设备权限一律拒绝 | `lib/security.js#decidePermission` |
-| IPC | 主进程只暴露 5 个固定 channel；每次调用校验 `event.sender === 侧边栏窗口`，来源不明直接拒绝并记日志；preload 不接受渲染进程传入的 channel 名 | `main.js#registerIpc`、`preload.js` |
+| 权限 | `setPermissionRequestHandler` + `setPermissionCheckHandler` **默认拒绝**摄像头/麦克风/地理/通知/HID/串口/USB/剪贴板读取等；仅放行 `clipboard-sanitized-write`；来源校验失败即拒绝——**来源证据缺失且不是主框架时拒绝**，存在 `embeddingOrigin`（跨源子框架）时一律拒绝（Electron 对跨源子帧故意不提供 `requestingUrl`，见下方"已知取舍"）；设备权限一律拒绝 | `lib/security.js#decidePermission` |
+| IPC | 主进程只暴露 6 个固定 channel（`get-status` / `reload-dsh` / `restart-service` / `open-log` / `get-log-tail`，外加状态推送 `status-update`）；每次调用校验 `event.sender === 侧边栏窗口`，来源不明直接拒绝并记日志；preload 不接受渲染进程传入的 channel 名 | `main.js#registerIpc`、`preload.js` |
 | 渲染层 | 侧边栏与占位页都有严格 CSP（`default-src 'self'`、`connect-src 'none'`、`object-src 'none'`、`base-uri 'none'`、`form-action 'none'`）；所有动态内容用 `textContent` 写入，杜绝日志/命令行/URL 造成的 XSS | `renderer/*` |
 | 目标地址 | `DSH_URL` 默认只接受本机地址；指向远端时**拒绝启动**，必须显式 `DSH_ALLOW_REMOTE=1` | `lib/config.js` |
-| 终止进程 | 终止任何 pid 前必须通过证据校验（见上表 #4）；`taskkill` 只对通过校验的 pid 执行；拒绝时打印补救方式 | `lib/procs.js#decideKill` |
+| 终止进程 | 终止前必须通过证据校验（见上表 #4）；**并且对当初"命令行已校验"的监听者在 kill 前再复验一次进程名与命令行**（防 pid 复用误杀）；`taskkill` 只对通过校验的 pid 执行；拒绝时打印补救方式。Windows 上用 `taskkill /T /F` 结束整棵进程树（`process.kill` 不连带子进程，且 Windows 没有真正的"温和阶段"），POSIX 才走 SIGTERM → SIGKILL | `lib/procs.js#decideKill`、`lib/service.js#_reverifyTarget` |
 | 启动命令 | 永不使用 `shell:true`（避免命令注入面与不可回收的包装进程）；命令先解析成真实可执行文件与参数数组 | `lib/procs.js#buildSpawnPlan` |
-| 日志 | 落盘前脱敏（查询串凭据、Bearer、URL 凭据、40+ 位 token）；可用 `DSH_LOG_REDACT_TOKENS=0` 关闭 | `lib/log.js#redact` |
+| 日志 | 落盘前脱敏：URL 查询串凭据、`--key value` / `--key=value` / `token: x` / `"token":"x"` / `#token=x`、`Bearer`、`Basic`、URL userinfo、40+ 位 token；可用 `DSH_LOG_REDACT_TOKENS=0` 关闭 | `lib/log.js#redact` |
+| 端口/进程查询 | 区分"确定空闲 / 在用 / 不知道"：探测超时或子进程查询失败**不得**被当成"端口空闲"；`npm run selftest -- --inspect <port>` 在查不到时以退出码 3 结束而不是谎报"无人监听" | `lib/procs.js#isPortInUseDetailed`、`findListenerPidDetailed` |
 | 会话隔离 | DSH 视图默认使用独立会话分区 `persist:dsh-view`（cookie/localStorage/缓存与其它 Electron 应用互不影响）；侧边栏走默认会话 | `lib/config.js#viewPartition`、`main.js` |
 | 单实例 | 防止多实例争抢端口/互相清理 | `main.js` |
 
@@ -304,7 +305,7 @@ npm start
 | 文件 | 作用 |
 |---|---|
 | `main.js` | 主进程装配：单实例、安全策略执行、窗口/视图/托盘、右键菜单、IPC、轮询与退出清理 |
-| `preload.js` | contextBridge 暴露 5 个固定接口给侧边栏 |
+| `preload.js` | contextBridge 暴露 6 个固定接口给侧边栏（其中 `getLogTail` 目前未被界面使用） |
 | `renderer/index.html` `sidebar.css` `sidebar.js` | 侧边栏 UI（严格 CSP，全部 `textContent` 渲染，告警/详情文本可选中复制） |
 | `renderer/view-placeholder.html` | 服务未就绪时的占位页 |
 | `lib/*.js` | 可单测的业务逻辑（含 `context-menu.js` 右键菜单模板，见上） |

@@ -119,10 +119,14 @@ function guardWebContents(contents, role) {
 function hardenSession(targetSession, role) {
   if (!targetSession) return;
   targetSession.setPermissionRequestHandler((contents, permission, callback, details) => {
-    const requestingUrl = (details && details.requestingUrl) || (contents && contents.getURL && contents.getURL()) || null;
+    const d = details || {};
     const verdict = decidePermission({
       permission,
-      requestingUrl,
+      // 只用 Electron 给出的**该框架**来源。不要用 contents.getURL() 兜底：那是顶层 URL，
+      // 会把子框架的请求误判成同源。
+      requestingUrl: d.requestingUrl || null,
+      isMainFrame: d.isMainFrame === true,
+      embeddingOrigin: d.embeddingOrigin || null,
       appUrl: config.url,
       allowExtra: config.allowedPermissions
     });
@@ -130,13 +134,18 @@ function hardenSession(targetSession, role) {
     callback(verdict.allow);
   });
   targetSession.setPermissionCheckHandler((contents, permission, requestingOrigin, details) => {
-    const requestingUrl = (details && details.requestingUrl) || requestingOrigin || null;
+    const d = details || {};
     const verdict = decidePermission({
       permission,
-      requestingUrl,
+      // 跨源子框架的检查**不提供** requestingUrl；requestingOrigin 在部分 Electron 版本里
+      // 对 iframe 传的是外层来源（CVE-2026-34777 那一类），所以有 embeddingOrigin 时直接拒绝。
+      requestingUrl: d.requestingUrl || requestingOrigin || null,
+      isMainFrame: d.isMainFrame === true,
+      embeddingOrigin: d.embeddingOrigin || null,
       appUrl: config.url,
       allowExtra: config.allowedPermissions
     });
+    if (!verdict.allow) logger.warn(`权限检查被拒绝（${role}）: ${permission} [${verdict.reason}]`);
     return verdict.allow;
   });
   if (typeof targetSession.setDevicePermissionHandler === 'function') {
