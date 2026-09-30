@@ -76,6 +76,7 @@ function makeManager(options = {}) {
   // 注入 kill 是必要的安全措施：用合成 pid 的用例绝不能落到真实的 process.kill 上
   if (options.kill) deps.kill = options.kill;
   if (options.platform) deps.platform = options.platform;
+  if (options.readProcessInfo) deps.readProcessInfo = options.readProcessInfo;
 
   const manager = new ServiceManager({
     config: { ...baseConfig(port), ...(options.config || {}) },
@@ -490,4 +491,59 @@ test('清理的终止策略按平台区分：Windows 先树杀（taskkill /T /F�
   assert.ok(posixResult.steps.includes('sigterm:4242:ok'), JSON.stringify(posixResult.steps));
   assert.strictEqual(posixExec.length, 0, 'POSIX 清理不应调用 taskkill');
   assert.deepStrictEqual(posixKills, [{ pid: 4242, signal: 'SIGTERM' }]);
+});
+
+test('终止前复验：pid 被回收（复验发现已不是 DSH）时放弃终止，绝不误杀', async () => {
+  const port = await freePort();
+  const holder = await startServer();
+  const kills = [];
+  const { manager } = makeManager({
+    port,
+    config: { url: `http://127.0.0.1:${holder.port}` },
+    kill: (pid) => { kills.push(pid); },
+    isPidAlive: (pid) => pid === 4242,
+    isPortInUse: async () => true,
+    waitForPortReleased: async () => false,
+    findListenerPid: async () => null, // 兜底也解析不到，避免它去动别的 pid
+    readProcessInfo: () => ({ pid: 4242, name: 'postgres.exe', commandLine: 'postgres -D C:\\data' })
+  });
+  manager.state.owned = true;
+  manager.state.mode = 'managed';
+  manager.state.listenerPid = 4242;
+  manager.state.listenerVerified = true; // 当初是按命令行证据认领的
+
+  const result = await manager.killManaged('test');
+  assert.ok(result.steps.some((s) => s.startsWith('verify-rejected:4242')), JSON.stringify(result.steps));
+  assert.deepStrictEqual(kills, [], '复验不通过时绝不能终止该 pid');
+  assert.strictEqual(result.ok, false);
+  await holder.close();
+});
+
+test('终止前复验：复验仍匹配时正常终止，并清空可信 pid 集合', async () => {
+  const port = await freePort();
+  const kills = [];
+  const { manager } = makeManager({
+    port,
+    kill: (pid) => { kills.push(pid); },
+    isPidAlive: (pid) => pid === 4242,
+    isPortInUse: async () => true,
+    waitForPortReleased: async () => true, // 第一轮就等到端口释放
+    findListenerPid: async () => null,
+    readProcessInfo: () => ({
+      pid: 4242,
+      name: 'node.exe',
+      commandLine: 'node D:\\x\\node_modules\\@deepseek-ai\\dsh\\lib\\bin.js web'
+    })
+  });
+  manager.state.owned = true;
+  manager.state.mode = 'managed';
+  manager.state.listenerPid = 4242;
+  manager.state.listenerVerified = true;
+  manager.state.trustedPids.add(4242);
+
+  const result = await manager.killManaged('test');
+  assert.ok(result.steps.includes('verify-ok:4242'), JSON.stringify(result.steps));
+  assert.strictEqual(result.ok, true);
+  assert.ok(kills.includes(4242), '复验通过后应真的终止目标');
+  assert.strictEqual(manager.state.trustedPids.size, 0, '清理完成后可信 pid 集合必须清空（否则只增不减）');
 });
