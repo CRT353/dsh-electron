@@ -12,8 +12,9 @@
 - **"接管并重启"按钮改为常驻显示**（灰显 + 悬停原因），不再只在需要时才出现（避免找不到）。
 - **新增安全停止工具** `npm stop`（`tools/stop-dsh.js`）：只终止"经身份校验确认是 DSH"的进程，
   用于替代 `dsh_off.ps1` 里"杀掉所有 node.exe"的做法（见第十节末）。
-- **旧脚本退役归档**：`dsh_on.ps1` / `dsh_off.ps1` 及其快捷方式已移入工作区根目录的
-  `dsh_legacy_v0.0.0/`（版本号 `0.0.0`，附 `RIP.txt`），当前唯一启停入口是 `dsh_electron.lnk` + `npm stop`。
+- **旧脚本退役归档**：`dsh_on.ps1` / `dsh_off.ps1` 及其快捷方式已移入
+  `02-projects\retired\dsh_legacy_v0.0.0\`（版本号 `0.0.0`，附 `RIP.txt`），
+  当前唯一启停入口是 `03-shortcuts\DSH.lnk` + `npm stop`。
 - 打包落地：`npm install` + `npm run dist` 产出 Windows 安装包与免安装版。
 
 **v1.2.1 修复**：主动清理服务时不再把进程退出误记为"服务异常退出"（Windows 上 `process.kill` 会把退出码报成 1，
@@ -125,8 +126,13 @@ npm run gen-icon               # 重新生成 icon.png / build/icon.ico
 npm run dist                   # 打包安装包（需 electron-builder）
 ```
 
-工作区根目录的 `dsh_electron.lnk` 双击即可启动（直接指向 `node_modules\electron\dist\electron.exe`，
-无控制台窗口）。若移动了目录，请重建快捷方式。
+启动入口在**快捷方式区**：`D:\Desktop\08-AI_Workspace\03-shortcuts\DSH.lnk`
+（直接指向本项目的 `node_modules\electron\dist\electron.exe`，无控制台窗口）；
+同目录还有 `停止 DSH 服务.lnk`（等价于 `npm stop`）。
+若移动了项目目录，请重建这两个快捷方式。
+
+本项目在工作区中的位置：`D:\Desktop\08-AI_Workspace\02-projects\source\dsh_electron\`
+（源代码区；各版本分发单独放在 `02-projects\releases\dsh-electron\<版本>\`）。
 
 ## 六、配置（环境变量）
 
@@ -256,8 +262,8 @@ npm run dist
 ### 旧的 `dsh_on.ps1` / `dsh_off.ps1`：已退役并归档
 
 它们曾是这个项目的前身（2026-08-22 启用，职责：一键拉起并开浏览器 / 一键停止）。
-现在职责已全部由本程序接管，**已归档到工作区根目录的 `dsh_legacy_v0.0.0/`**（版本号 `0.0.0`，附 `RIP.txt` 墓志），
-不再参与日常启停：
+现在职责已全部由本程序接管，**已归档到 `02-projects\retired\dsh_legacy_v0.0.0\`**
+（版本号 `0.0.0`，附 `RIP.txt` 墓志），不再参与日常启停：
 
 | 旧脚本 | 它做什么 | 为什么退役 |
 |---|---|---|
@@ -267,12 +273,12 @@ npm run dist
 当前唯一的启停方式：
 
 ```powershell
-双击 dsh_electron.lnk        # 启动（自动拉起/复用服务）
+双击 03-shortcuts\DSH.lnk     # 启动（自动拉起/复用服务）
 npm stop                     # 停止（带身份校验，不会误伤其它 node）
 npm run stop:dry             # 只看会终止谁，不动任何进程
 ```
 
-如果哪天还想用回旧脚本：把 `.ps1` 从 `dsh_legacy_v0.0.0/` 复制回工作区根目录即可（内容未改动），
+如果哪天还想用回旧脚本：把 `.ps1` 从 `02-projects\retired\dsh_legacy_v0.0.0\` 复制到任意目录执行即可（内容未改动），
 但**不要**让它与 `dsh_electron` 同时"拥有"同一个服务——一边清理、另一边还在原地，只会制造 `orphan`/`takeover`。
 对应的两个 `.lnk` 也一起归档了（它们指向原绝对路径，搬走后已失效，仅作纪念）。
 
