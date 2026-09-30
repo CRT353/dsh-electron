@@ -611,15 +611,24 @@ function startShutdown(reason) {
       app.exit(0);
       return;
     }
+    // 退出码要诚实：本程序负责的服务没清理干净时以 1 结束（GUI 下不影响使用，
+    // 但日志/脚本能看出"这次退出留了尾巴"）。not-managed / port-free 属于正常无操作。
+    let exitCode = 0;
     try {
       const result = await service.shutdown({ timeoutMs: config.killTimeoutMs });
       logger.info(`退出清理结果: ok=${result.ok} reason=${result.reason || '-'} released=${result.released === undefined ? '-' : result.released}`);
+      const benign = result.ok === true || result.reason === 'not-managed' || result.reason === 'port-free';
+      if (!benign) {
+        exitCode = 1;
+        logger.warn(`退出清理未完成（${result.reason || 'unknown'}）：本程序拉起的服务可能仍在运行，下次启动会以对应状态显示。`);
+      }
     } catch (err) {
+      exitCode = 1;
       logger.error('退出清理异常', err);
     } finally {
       cleanupDone = true;
       if (tray) { try { tray.destroy(); } catch (_) { /* 忽略 */ } tray = null; }
-      app.exit(0);
+      app.exit(exitCode);
     }
   })();
 }

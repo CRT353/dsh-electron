@@ -63,14 +63,18 @@ function makeManager(options = {}) {
     findListenerPid: options.findListenerPid || (async () => {
       const last = children[children.length - 1];
       if (!last) return null;
-      // 模拟真实 netstat + 命令行读取：命令行里含 dsh，因此可被身份校验放行
-      return { pid: last.pid, name: 'node.exe', commandLine: `node tests/dummy-server.js --dsh-test pid=${last.pid}` };
+      // 模拟真实 netstat + 命令行读取：命令行用**真实 dsh 入口形态**
+      // （本机 dsh.cmd 实际执行的就是 @deepseek-ai/dsh/lib/bin.js），因此可被身份校验放行。
+      return { pid: last.pid, name: 'node.exe', commandLine: `node D:\\nvm\\v24.18.0\\node_modules\\@deepseek-ai\\dsh\\lib\\bin.js web --no-open --test-pid=${last.pid}` };
     }),
     isPidAlive: options.isPidAlive || isPidAlive,
     isPortInUse: options.isPortInUse || isPortInUse,
     waitForPortReleased: options.waitForPortReleased || waitForPortReleased
   };
   if (options.sleep) deps.sleep = options.sleep;
+  if (options.setTimer) deps.setTimer = options.setTimer;
+  // 注入 kill 是必要的安全措施：用合成 pid 的用例绝不能落到真实的 process.kill 上
+  if (options.kill) deps.kill = options.kill;
 
   const manager = new ServiceManager({
     config: { ...baseConfig(port), ...(options.config || {}) },
@@ -142,7 +146,8 @@ test('端口不释放时放弃拉起（避免双实例抢端口导致 boot 失�
     port,
     config: { url: `http://127.0.0.1:${blocker.port}` },
     isPortInUse: async () => true,
-    waitForPortReleased: async () => false
+    waitForPortReleased: async () => false,
+    kill: () => {} // 合成 pid 4242：不得落到真实 process.kill
   });
   blockerManager.manager.state.owned = true;
   blockerManager.manager.state.mode = 'managed';
@@ -165,6 +170,7 @@ test('清理拒绝终止陌生进程（默认拒绝，且不再"杀掉任何监�
     isPidAlive: (pid) => pid === 4242,          // 我们记录的 pid "还活着"
     isPortInUse: async () => true,              // 端口始终有人占用
     waitForPortReleased: async () => false,     // 永远不会释放
+    kill: () => {},                             // 合成 pid 4242：不得落到真实 process.kill
     findListenerPid: async () => ({ pid: 9999, name: 'postgres.exe', commandLine: 'postgres -D C:\\data' })
   });
 
@@ -195,6 +201,7 @@ test('清理兜底：命令行匹配 dsh 时才允许强杀（并记录判定依
     isPidAlive: (pid) => pid === 4242,
     isPortInUse: async () => true,
     waitForPortReleased: async () => false,
+    kill: () => {},                             // 合成 pid 4242：不得落到真实 process.kill
     findListenerPid: async () => ({
       pid: 9999,
       name: 'node.exe',
@@ -274,4 +281,64 @@ test('复用外部服务：不认领、不清理，并暴露"接管"入口', asy
   assert.strictEqual(restart.ok, false);
   assert.strictEqual(restart.reason, 'external');
   await external.close();
+});
+
+test('清理遵守时间预算：预算不足时显式跳过兜底并如实报告（旧实现会被外层超时截断）', async () => {
+  const port = await freePort();
+  const holder = await startServer();
+  const { manager, execCalls } = makeManager({
+    port,
+    config: { url: `http://127.0.0.1:${holder.port}` },
+    exec: (spec) => { execCalls.push(spec); return { ok: false, stdout: '', stderr: 'stub' }; },
+    kill: () => {},
+    isPidAlive: (pid) => pid === 4242,
+    isPortInUse: async () => true,
+    waitForPortReleased: async () => false, // 端口永不释放
+    findListenerPid: async () => ({
+      pid: 9999,
+      name: 'node.exe',
+      commandLine: 'node D:\\x\\node_modules\\@deepseek-ai\\dsh\\bin.js web'
+    })
+  });
+  manager.state.owned = true;
+  manager.state.mode = 'managed';
+  manager.state.listenerPid = 4242;
+
+  // 预算 1ms：两步等待耗尽后，兜底必须被显式跳过（而不是被外层超时强行截断）
+  const result = await manager.killManaged('test', { budgetMs: 1 });
+  assert.strictEqual(result.reason, 'budget-exhausted', JSON.stringify(result));
+  assert.ok(result.steps.some((s) => s.startsWith('fallback:skipped-budget')), JSON.stringify(result));
+  assert.ok(!execCalls.some((c) => (c.args || []).includes('9999')), '预算不足时不得去动兜底目标');
+  assert.strictEqual(manager.snapshot().lastKill.released, false, '失败也要留下 lastKill 记录供诊断');
+  await holder.close();
+});
+
+test('shutdown() 返回真实清理结果，不会被外层超时吞掉', async () => {
+  const port = await freePort();
+  const { manager } = makeManager({ port });
+  await manager.ensure();
+
+  const result = await manager.shutdown({ timeoutMs: 6000 });
+  assert.strictEqual(result.ok, true, `正常清理应返回真实结果而不是 shutdown-timeout：${JSON.stringify(result)}`);
+  assert.strictEqual(result.released, true);
+  assert.strictEqual(manager.snapshot().mode, 'stopped');
+  assert.strictEqual(await isPortInUse(port, '127.0.0.1', 500), false);
+});
+
+test('shutdown() 预算耗尽时如实返回 shutdown-timeout（不假装成功）', async () => {
+  const port = await freePort();
+  const { manager } = makeManager({
+    port,
+    kill: () => {},
+    isPidAlive: () => true,
+    waitForPortReleased: () => new Promise(() => {}), // 永远挂住，模拟清理卡死
+    setTimer: (fn) => setTimeout(fn, 0)                // 立即触发兜底保险
+  });
+  manager.state.owned = true;
+  manager.state.mode = 'managed';
+  manager.state.listenerPid = 4242;
+
+  const result = await manager.shutdown({ timeoutMs: 6000 });
+  assert.strictEqual(result.ok, false);
+  assert.strictEqual(result.reason, 'shutdown-timeout');
 });
