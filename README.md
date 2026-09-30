@@ -3,7 +3,37 @@
 把 DSH Web GUI（默认 `http://127.0.0.1:3080`）装进独立 Electron 窗口，并附带
 **服务生命周期管理、归属校验、状态监测侧边栏与安全加固**。
 
-当前版本 **v1.3.0**（v1.1.0 = 生命周期与安全加固版；v1.0.0 原始实现见快照 `d09f279`，标签 `v1.0.0-snapshot`）。
+当前版本 **v1.3.1**（v1.3.1 = 审计修复版；v1.1.0 = 生命周期与安全加固版；v1.0.0 原始实现见快照 `d09f279`，标签 `v1.0.0-snapshot`）。
+
+**v1.3.1 变化（一次完整审计后的修复，按严重度分四组）**
+
+- **误杀面 / 静默回落**：默认身份判定模式由裸 `/dsh/i` 收紧为锚定 DSH 入口形态
+  （`@deepseek-ai/dsh`、`dsh(.exe|.cmd)`、`<...>/dsh/lib/bin.js`），不再把路径里偶然含 "dsh"
+  的无关 node 服务判成 DSH；`npm stop --port` 缺值/越界改为直接报错（旧实现静默回落到 3080，
+  打印的是 `NaN`、停掉的却是真实服务）；进程查询改用 `netstat -ano`（`-p TCP` 在 Windows 上
+  不含任何 IPv6 监听项，实测 0/43）。
+- **失败侧归属**：退出清理改为按时间预算分配（旧实现各步等待之和远超超时，`app.exit` 会在强杀与
+  兜底之前截断清理，服务被留成孤儿且不记录 `lastKill`）；就绪失败也承认归属（否则自己拉起的进程
+  永不被清理、之后重启永远卡在 port-busy）；netstat 受限时不再把正常服务误报成 orphan
+  （旧实现会打印字面量"原 pid null 已退出"）；命令行读不到时提供"spawn 相关性"恢复入口
+  （仅用户显式点击时生效）；Windows 用 `taskkill /T /F` 结束整棵进程树（`process.kill` 不连带
+  子进程，且 Windows 没有真正的"温和阶段"）；终止前用命令行复验一次身份（防 pid 复用误杀），
+  可信 pid 集合不再只增不减。
+- **"不知道"不再被当成"知道"**：健康探测不再跟随重定向（旧实现下"3xx → HTML 登录页"的陌生服务
+  会被认证成 identity=strong）；端口与进程查询区分"确定空闲 / 在用 / 不知道"；
+  `selftest --inspect` 在查不到监听者时以退出码 3 结束，而不是谎报"未查到监听者/端口空闲"；
+  `probeInternet` 不再把 4xx/5xx/重定向算作"网络在线"。
+- **日志与凭据**：`stream()` 先判级再截断（旧实现会丢掉落在 2000 字符之后的根因、并把它降级成
+  INFO，侧边栏"当前问题"因此为空）；脱敏补齐 `--token xxx`、`token: xxx`、`"token":"xxx"`、
+  `#token=x`、`Authorization: Basic`（`DSH_START_COMMAND` 里的凭据曾被逐字写进日志并长期留存）；
+  打包态（`__dirname` 落在不可写的 `resources/app.asar` 内）默认日志路径改用 userData 目录，
+  落盘失败也不再被静默吞掉。
+- 其它：`bool()` 容忍空白（cmd 的 `set VAR=1 && npm start` 不再导致"配置错误"拒绝启动）；
+  `ringSize` 负值不再死循环卡死主进程；`cause` 链超过 10 层显式标注；轮询加重入保护；
+  权限闸门在"来源证据缺失"或"跨源子框架"时一律拒绝；`preload` 接口数文档由 5 改为 6。
+- 会话日志工具箱（`02-projects/source/dsh-session-tools/`）另行修复：`truncate` 在首条记录损坏时
+  写出的文件加载器无法读取、`region.mjs` 字符/字节混用导致崩栈、空帧被判"健康"、明文布局报错
+  不友好、并发写入导致备份与产物同时丢数据（新增 size/mtime 复检与 fsync）。
 
 **v1.3.0 变化**
 
@@ -118,7 +148,7 @@ DevTools、服务操作、"复制状态摘要"），不想记快捷键时可以�
 ```powershell
 npm install                    # 首次
 npm start                      # 启动独立窗口
-npm test                       # 61 个自动化用例
+npm test                       # 117 个自动化用例
 npm run selftest               # 真实环境自检（建议在普通终端运行）
 npm run selftest -- --inspect 3080   # 只读查看 3080 被谁监听（不会终止任何进程）
 npm stop                       # 安全停止 DSH 服务（带身份校验，不会误杀其它 node 进程）
@@ -176,7 +206,7 @@ npm run dist                   # 打包安装包（需 electron-builder）
 ## 八、测试与自检
 
 ```powershell
-npm test                        # 61 项：单测 + 集成测试 + main.js 装配层烟雾测试
+npm test                        # 117 项：单测 + 集成测试 + 装配层 + 渲染层 + 桥接契约 + 自检退出码
 npm run selftest                # 真实 netstat/ps → 认领 → taskkill/kill → 端口释放 全链路
 npm run selftest -- --inspect 3080
 ```
@@ -184,16 +214,29 @@ npm run selftest -- --inspect 3080
 - `npm test` 用 `--test-isolation=none` 以便在受限终端（禁止子进程管道）里也能跑；在普通终端也可以直接
   `node --test tests/`。
 - `tests/service.test.js` 用**真实子进程 + 真实端口探测**验证"拉起 → 认领监听 pid → 清理 → 端口释放"，
-  测试内注入的只是"进程查询"这一类需要系统命令的依赖；随机端口，绝不使用 3080。
+  测试内注入的只是"进程查询"这一类需要系统命令的依赖；随机端口，绝不使用 3080。覆盖六个归属状态
+  （含 `foreign`）、就绪失败的三条分支、清理预算、双平台终止策略、终止前身份复验。
 - `tests/main-smoke.test.js` 用最小假 Electron 模块驱动 `main.js`，验证装配层接线：
-  IPC 通道与 sender 校验、权限默认拒绝/白名单放行、导航与外链协议策略、视图状态机、退出清理。
+  IPC 通道与 sender 校验、权限默认拒绝/白名单放行、导航与外链协议策略、视图状态机、退出清理，
+  以及关闭三选的三条分支、`window-all-closed` 收尾、视图失败态与崩溃、`will-redirect` /
+  `will-attach-webview`、`second-instance`、右键菜单动作接线。
   它**不渲染真实窗口**，不能替代人工双击运行验证（Electron 渲染进程需要真实 GUI 环境）。
+- `tests/sidebar.test.js` 用极简 DOM 桩 + `vm` 执行**真实的** `renderer/sidebar.js`：
+  服务来源文案映射、异常框显隐、按钮可用性，以及"操作进行中不得被状态推送重新启用按钮"
+  这类所有权问题（可用 `DSH_SIDEBAR_PATH` 指向旧版本以验证用例本身有判别力）。
+- `tests/preload.test.js` 用假 `electron` 加载真实 `preload.js`，钉死暴露面（只有 `dshBridge`、
+  恰 6 个方法、不泄漏原生物件）与 channel 名/入参收敛。
+- `tests/selftest.test.js` 守住 `tools/selftest.js` 的退出码语义：`--port 3080` 必须拒绝执行（退出码 2）；
+  `--inspect` 要么给出结论（0，且输出里有 pid），要么明确"查询能力不可用"（3）——
+  **不允许把"我查不到"说成"端口空闲"**。
+- `tests/icon.test.js` 校验已提交的图标产物（PNG 块结构 + IDAT 可解压且长度匹配、ICO 目录表与
+  内嵌 PNG 载荷、两处 256px 图标一致）：图标损坏不会有任何其它用例变红，属典型静默回归。
 - `tools/selftest.js` 分两段跑真实生命周期：**① 直接启动**（`node dummy-server.js`）与
   **② cmd 包装启动**（`cmd.exe /d /s /c node dummy-server.js`，专门复现旧版"包装进程 pid ≠ 真服务 pid、
   `taskkill` 杀不掉服务"的条件），各自校验：能拉起、能认领真实监听 pid、身份经命令行校验、
   清理后端口释放、真服务与包装进程都已退出、主动清理不产生假故障。共 13 项检查。
-  它必须**在普通终端运行**；若检测到受限环境（`spawn EPERM`）会明确提示并以退出码 3 结束，
-  而不是让你误以为代码有问题。
+  能力探测用**自建临时监听**，不依赖 3080 是否在跑；它必须**在普通终端运行**，若进程查询能力
+  不可用会明确提示并以退出码 3 结束，而不是把环境问题伪装成代码问题。
 - 任何一次测试/自检都不会操作 3080（脚本内置断言拒绝），需要查看 3080 时只做只读检查。
 
 ## 九、打包
@@ -204,7 +247,11 @@ npm run gen-icon                # 可选：重新生成图标
 npm run dist                    # 输出 dist/：NSIS 安装包 + 免安装单文件版
 ```
 
-**已实测产物**（v1.3.0，Windows x64）
+> ⚠ **产物与源码的版本差**：下面这份实测记录对应 **v1.3.0** 的产物；当前源码已是 **v1.3.1**
+> （审计修复版，含"打包态日志路径落在不可写的 app.asar 内"等修复）。要拿到带修复的安装包，
+> 需要重新执行 `npm run dist`；旧产物不具备这些修复。
+>
+> **已实测产物**（v1.3.0，Windows x64）
 
 | 文件 | 用途 |
 |---|---|
@@ -309,7 +356,7 @@ npm start
 | `renderer/index.html` `sidebar.css` `sidebar.js` | 侧边栏 UI（严格 CSP，全部 `textContent` 渲染，告警/详情文本可选中复制） |
 | `renderer/view-placeholder.html` | 服务未就绪时的占位页 |
 | `lib/*.js` | 可单测的业务逻辑（含 `context-menu.js` 右键菜单模板，见上） |
-| `tests/*.test.js` | 61 个自动化用例；`tests/dummy-server.js` 为假 DSH 服务 |
+| `tests/*.test.js` | 117 个自动化用例；`tests/dummy-server.js` 为假 DSH 服务 |
 | `tools/selftest.js` | 真实环境全链路自检 / 只读端口检查 |
 | `tools/stop-dsh.js` | 安全停止工具（`npm stop`）：带身份校验，不会误杀其它 node 进程 |
 | `tools/gen-icon.js` | 纯 Node 生成 `icon.png` 与 `build/icon.ico` |
