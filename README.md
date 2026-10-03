@@ -150,7 +150,7 @@ DevTools、服务操作、"复制状态摘要"），不想记快捷键时可以�
 | 终止进程 | 终止前必须通过证据校验（见上表 #4）；**并且对当初"命令行已校验"的监听者在 kill 前再复验一次进程名与命令行**（防 pid 复用误杀）；`taskkill` 只对通过校验的 pid 执行；拒绝时打印补救方式。Windows 上用 `taskkill /T /F` 结束整棵进程树（`process.kill` 不连带子进程，且 Windows 没有真正的"温和阶段"），POSIX 才走 SIGTERM → SIGKILL | `lib/procs.js#decideKill`、`lib/service.js#_reverifyTarget` |
 | 启动命令 | 永不使用 `shell:true`（避免命令注入面与不可回收的包装进程）；命令先解析成真实可执行文件与参数数组 | `lib/procs.js#buildSpawnPlan` |
 | 日志 | 落盘前脱敏：URL 查询串凭据、`--key value` / `--key=value` / `token: x` / `"token":"x"` / `#token=x`、`Bearer`、`Basic`、URL userinfo、40+ 位 token；可用 `DSH_LOG_REDACT_TOKENS=0` 关闭 | `lib/log.js#redact` |
-| 端口/进程查询 | 区分"确定空闲 / 在用 / 不知道"：探测超时或子进程查询失败**不得**被当成"端口空闲"；`npm run selftest -- --inspect <port>` 在查不到时以退出码 3 结束而不是谎报"无人监听" | `lib/procs.js#isPortInUseDetailed`、`findListenerPidDetailed` |
+| 端口/进程查询 | 区分"确定空闲 / 在用 / 不知道"：探测超时或子进程查询失败**不得**被当成"端口空闲"；`node tools\selftest.js --inspect <port>` 在查不到时以退出码 3 结束而不是谎报"无人监听" | `lib/procs.js#isPortInUseDetailed`、`findListenerPidDetailed` |
 | 会话隔离 | DSH 视图默认使用独立会话分区 `persist:dsh-view`（cookie/localStorage/缓存与其它 Electron 应用互不影响）；侧边栏走默认会话 | `lib/config.js#viewPartition`、`main.js` |
 | 单实例 | 防止多实例争抢端口/互相清理 | `main.js` |
 
@@ -175,9 +175,9 @@ DevTools、服务操作、"复制状态摘要"），不想记快捷键时可以�
 ```powershell
 npm install                    # 首次
 npm start                      # 启动独立窗口
-npm test                       # 117 个自动化用例
+npm test                       # 119 个自动化用例
 npm run selftest               # 真实环境自检（建议在普通终端运行）
-npm run selftest -- --inspect 3080   # 只读查看 3080 被谁监听（不会终止任何进程）
+node tools\selftest.js --inspect 3080   # 只读：看 3080 被谁监听（不终止任何进程）
 npm stop                       # 安全停止 DSH 服务（带身份校验，不会误杀其它 node 进程）
 npm run stop:dry               # 只看会终止谁，不动任何进程
 npm run gen-icon               # 重新生成 icon.png / build/icon.ico
@@ -233,10 +233,16 @@ npm run dist                   # 打包安装包（需 electron-builder）
 ## 八、测试与自检
 
 ```powershell
-npm test                        # 117 项：单测 + 集成测试 + 装配层 + 渲染层 + 桥接契约 + 自检退出码
+npm test                        # 119 项：单测 + 集成测试 + 装配层 + 渲染层 + 桥接契约 + 自检退出码
 npm run selftest                # 真实 netstat/ps → 认领 → taskkill/kill → 端口释放 全链路
-npm run selftest -- --inspect 3080
+node tools\selftest.js --inspect 3080   # 只读：看 3080 被谁监听（不终止任何进程）
 ```
+
+> **⚠ 别用 `npm run selftest -- --inspect 3080` 这个写法**（本 README 早先版本写过，已改正）：
+> 在 npm 12 上实测会失败 —— npm 不再把 `--` 之后的东西原样交给脚本，而是自己解析，
+> 报 `EUNKNOWNCONFIG / Unknown cli flag: --inspect`。传参数给自检脚本请**直接调用**
+> `node tools\selftest.js <参数>`（`package.json` 里 `selftest` 就是这条命令）。
+> 不带参数的 `npm run selftest` 不受影响。
 
 - `npm test` 用 `--test-isolation=none` 以便在受限终端（禁止子进程管道）里也能跑；在普通终端也可以直接
   `node --test tests/`。
@@ -261,7 +267,8 @@ npm run selftest -- --inspect 3080
 - `tools/selftest.js` 分两段跑真实生命周期：**① 直接启动**（`node dummy-server.js`）与
   **② cmd 包装启动**（`cmd.exe /d /s /c node dummy-server.js`，专门复现旧版"包装进程 pid ≠ 真服务 pid、
   `taskkill` 杀不掉服务"的条件），各自校验：能拉起、能认领真实监听 pid、身份经命令行校验、
-  清理后端口释放、真服务与包装进程都已退出、主动清理不产生假故障。共 13 项检查。
+  清理后端口释放、真服务与包装进程都已退出、主动清理不产生假故障。**合计项数由脚本末尾自己打印**
+  （Windows 上两段都会跑；按代码路径约 19 项，视条件分支略有出入 —— 不在这里写死数字，免得再次过期）。
   能力探测用**自建临时监听**，不依赖 3080 是否在跑；它必须**在普通终端运行**，若进程查询能力
   不可用会明确提示并以退出码 3 结束，而不是把环境问题伪装成代码问题。
 - 任何一次测试/自检都不会操作 3080（脚本内置断言拒绝），需要查看 3080 时只做只读检查。
@@ -333,7 +340,7 @@ npm run dist
 |---|---|
 | 侧边栏"服务来源"显示 `orphan` | 本程序记录的 pid 已退出但端口仍被疑似 dsh 的进程服务（典型场景：上一版程序把真服务留成了孤儿）。点"**接管并重启**"即可纳管并重建服务 |
 | 显示 `reuse`，重启按钮不可用 | 服务是你自己在终端里启动的。按设计本程序不重启/不清理它；如需纳管请点"接管并重启" |
-| 显示 `takeover` | 端口被别的进程占用。先确认谁在用：`npm run selftest -- --inspect 3080` |
+| 显示 `takeover` | 端口被别的进程占用。先确认谁在用：`node tools\selftest.js --inspect 3080` |
 | 清理时日志出现 `拒绝终止 pid ...` | 该进程没通过身份校验（默认拒绝是安全设计）。确认它确实是本程序的 DSH 后，可临时 `DSH_ALLOW_UNVERIFIED_KILL=1` |
 | 日志出现 `plugin tree failed to load`（含完整堆栈与 cause） | DSH 自身 boot 失败，通常是端口被占或配置问题；v1.1.0 已保证不会因为"重启不等端口"制造这个错误 |
 | 启动报"DSH_URL 指向非本机地址" | 安全默认值。确需远端请设 `DSH_ALLOW_REMOTE=1` |
@@ -403,7 +410,7 @@ npm start
 | `renderer/index.html` `sidebar.css` `sidebar.js` | 侧边栏 UI（严格 CSP，全部 `textContent` 渲染，告警/详情文本可选中复制） |
 | `renderer/view-placeholder.html` | 服务未就绪时的占位页 |
 | `lib/*.js` | 可单测的业务逻辑（含 `context-menu.js` 右键菜单模板，见上） |
-| `tests/*.test.js` | 117 个自动化用例；`tests/dummy-server.js` 为假 DSH 服务 |
+| `tests/*.test.js` | 119 个自动化用例；`tests/dummy-server.js` 为假 DSH 服务 |
 | `tools/selftest.js` | 真实环境全链路自检 / 只读端口检查 |
 | `tools/stop-dsh.js` | 安全停止工具（`npm stop`）：带身份校验，不会误杀其它 node 进程 |
 | `tools/gen-icon.js` | 纯 Node 生成 `icon.png` 与 `build/icon.ico` |
