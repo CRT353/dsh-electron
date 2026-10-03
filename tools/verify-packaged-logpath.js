@@ -59,10 +59,15 @@ function main() {
     check('asar 内不含 node_modules 冗余', !entries.some((e) => e.startsWith('node_modules')), `${entries.length} 个条目`);
 
     // ---- 2. 关键：默认日志路径不得落在 asar 内 ----
-    // 用产物自身的 package.json#name 推导 userData —— 这正是 Electron 的做法
-    // （app.getPath('userData') = %APPDATA%\<app.getName()>），因此这里验证的就是真实取值。
-    const userData = path.join(process.env.APPDATA || os.homedir(), pkg.name);
-    console.log(`由产物推导的 userData: ${userData}（依据 asar 内 package.json 的 name）\n`);
+    // 用产物自身的 package.json 推导 userData —— 这正是 Electron 的做法：
+    // app.getPath('userData') = %APPDATA%\<app.getName()>，而 getName() **优先取顶层
+    // productName**，没有才退回 name。所以这里必须用同样的优先级，否则推导出的
+    // 目录会与实际不符（v1.3.2 修的就是这件事：产物缺顶层 productName 时，
+    // 打包版与开发版会落进同一个目录）。
+    const appName = pkg.productName || pkg.name;
+    const userData = path.join(process.env.APPDATA || os.homedir(), appName);
+    console.log(`应用标识: ${appName}（来自 ${pkg.productName ? '顶层 productName' : 'name'}）`);
+    console.log(`由产物推导的 userData: ${userData}\n`);
 
     check('isInsideAsar 能识别真实打包路径', cfg.isInsideAsar(asarPath) === true);
 
