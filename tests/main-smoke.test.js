@@ -623,7 +623,37 @@ test('托盘翻转通知：窗口隐藏时服务状态翻转弹一次气泡，�
     await new Promise((r) => setTimeout(r, 1300));
     assert.strictEqual(tray.balloons.length, countAfterFlip, '同一状态不得重复弹气泡');
 
-    // 说明：README 声称"窗口可见时交给侧边栏、不打扰"，那条分支未在此断言
-    //（需要一次发生在窗口可见期间的翻转，本用例只构造一次翻转）。
+    // 说明：本用例只构造了一次翻转，覆盖的是"窗口隐藏"分支；
+    // "窗口可见时不打扰"那条分支由下一条用例断言。
+  });
+});
+
+test('托盘翻转通知：窗口可见时不弹气泡，只在日志里如实记录（不打扰）', async () => {
+  // 与上一条互补。实现是 `if (hidden) { 弹气泡 } else if (dsh 翻红) { 只记日志 }`，
+  // 所以必须让那次翻转**发生在窗口可见期间**才能走到可见分支。
+  await withMain({ DSH_POLL_INTERVAL: '1000', DSH_FAIL_THRESHOLD: '1' }, async (stub, { server, logFile }) => {
+    const win = stub.calls.windows[0];
+    const tray = stub.calls.trays[0];
+    assert.ok(tray, '应存在托盘');
+    assert.strictEqual(win.isVisible(), true, '本用例前提：窗口一开始就是可见的');
+
+    await server.close();
+
+    // 先把"翻转确实发生了"等到手（否则后面"没弹气泡"可能只是还没轮到翻转 → 假通过）
+    let logText = '';
+    const deadline = Date.now() + 6000;
+    while (Date.now() < deadline) {
+      logText = fs.readFileSync(logFile, 'utf8');
+      if (/DSH 服务不可达/.test(logText)) break;
+      await new Promise((r) => setTimeout(r, 200));
+    }
+    assert.ok(/DSH 服务不可达/.test(logText), `窗口可见时应把翻转如实写进日志：${logText}`);
+
+    // 再等一轮，确认可见期间不会"补弹"气泡
+    await new Promise((r) => setTimeout(r, 1300));
+
+    // 两条缺一不可：只看"没弹气泡"会因为窗口被意外隐藏而假通过
+    assert.strictEqual(win.isVisible(), true, '窗口应始终保持可见（否则本用例会假通过）');
+    assert.deepStrictEqual(tray.balloons, [], `窗口可见时不得弹气泡：${JSON.stringify(tray.balloons)}`);
   });
 });

@@ -247,17 +247,33 @@ npm run gen-icon                # 可选：重新生成图标
 npm run dist                    # 输出 dist/：NSIS 安装包 + 免安装单文件版
 ```
 
-> ⚠ **产物与源码的版本差**：下面这份实测记录对应 **v1.3.0** 的产物；当前源码已是 **v1.3.1**
-> （审计修复版，含"打包态日志路径落在不可写的 app.asar 内"等修复）。要拿到带修复的安装包，
-> 需要重新执行 `npm run dist`；旧产物不具备这些修复。
+> **产物与源码的版本对应**：已发布的产物是 **v1.3.1**（在
+> `02-projects\releases\dsh-electron\1.3.1\`，构建自提交 `0fd1df1` = 标签 `v1.3.1`）。
+> `releases\` 里的 `1.3.0\` 是**修复前**的产物，不具备 v1.3.1 的修复。
 >
-> **已实测产物**（v1.3.0，Windows x64）
+> 打包完请跑一次自动验收 —— 它直接读产物里的 `lib/config.js`（该文件不依赖 Electron），
+> 因此**不需要人工双击 GUI** 就能验收"日志路径"这一类打包态行为：
+>
+> ```powershell
+> npm run dist
+> node tools\verify-packaged-logpath.js     # 退出码 0 = 全部通过
+> ```
+>
+> 它覆盖：打包态默认日志路径不得落进不可写的 `app.asar`（v1.3.0 时代唯一只有推理、
+> 没能实测的那条修复）、"旧路径写入确实抛 `ENOENT`"的实证，以及开发态 /
+> `DSH_LOG_FILE` / 兜底路径三条不回归契约；并会检查产物 `package.json` 缺少顶层
+> `productName` 的问题（见本节末与第十节）。
 
 | 文件 | 用途 |
 |---|---|
-| `dist\DSH Desktop Setup 1.3.0.exe`（约 78 MB） | NSIS 安装包：可选安装目录、建桌面快捷方式、带卸载器 |
-| `dist\DSH Desktop 1.3.0.exe`（约 78 MB） | 免安装单文件版，双击即用 |
+| `dist\DSH Desktop Setup 1.3.1.exe`（约 78 MB） | NSIS 安装包：可选安装目录、建桌面快捷方式、带卸载器 |
+| `dist\DSH Desktop 1.3.1.exe`（约 78 MB） | 免安装单文件版，双击即用 |
 | `dist\win-unpacked\` | 解包后的应用目录（`resources\app.asar` 内只有 16 个应用文件，无 node_modules 冗余） |
+
+> **已实测**（v1.3.1，Windows x64）：两个 exe 均可产出并复算 SHA-256 一致；
+> 直接启动 `dist\win-unpacked\DSH Desktop.exe` 时，日志确实产生在 userData 目录内、
+> 内容含"DSH Electron 启动（v1.3.1…）"、且不指向 `app.asar`。细节见
+> `02-projects\releases\dsh-electron\1.3.1\RELEASE.txt` 的"验证状态"一节。
 
 如果构建时下载卡住（国内网络访问 GitHub 受限），先设置镜像再构建：
 
@@ -277,9 +293,18 @@ npm run dist
   但窗口/任务栏/托盘图标已由 `icon.png` 提供，功能不受影响。
   想要 exe 也带自己的图标：开启 Windows 开发者模式（或管理员终端）后把该项改回 `true` 重新构建。
 
-> 打包后的应用 `productName` 是 `DSH Desktop`，与开发运行（`npm start`）的系统标识不同：
-> 两者**可以同时启动**（单实例锁按应用标识区分）。但它们共用同一个 DSH 端口，
-> 建议只保留一个在跑，否则第二个会以 `reuse`（外部服务）身份复用端口——不冲突，但状态归属会看着别扭。
+> ⚠ **打包版与开发版共用同一个 userData 目录，因此不能同时运行**
+> （2026-10-03 实测修正；旧文档称"应用标识不同、可以同时启动"是错的）：
+> 打包产物内的 `package.json` 只有 `name="dsh-electron"`、**没有顶层 `productName`**
+> （`build.productName` 不会被 electron-builder 带进 asar），而 Electron 的
+> `app.getPath('userData')` 由 `app.getName()` 决定 —— 于是打包版与开发版（`npm start`）
+> 的 userData 都是 `%APPDATA%\dsh-electron`，并不是 `%APPDATA%\DSH Desktop`。
+> 两个版本的单实例锁因此落在同一目录：先启动的持有锁，后启动的**一启动就静默退出**
+> （退出码 0，没有窗口、也不写日志），表现就像"双击没反应"。
+> 绕过：给后启动的加 `--user-data-dir=<另一个目录>`。
+> 根治：在 `package.json` 顶层补 `"productName": "DSH Desktop"`（建议纳入下一版）。
+> 两者仍共用 DSH 端口：在错开 userData 后同时运行时，第二个会以 `reuse`
+> （外部服务）身份复用端口——不冲突，但状态归属会看着别扭。
 
 ## 十、故障排查
 
@@ -292,6 +317,7 @@ npm run dist
 | 日志出现 `plugin tree failed to load`（含完整堆栈与 cause） | DSH 自身 boot 失败，通常是端口被占或配置问题；v1.1.0 已保证不会因为"重启不等端口"制造这个错误 |
 | 启动报"DSH_URL 指向非本机地址" | 安全默认值。确需远端请设 `DSH_ALLOW_REMOTE=1` |
 | 右侧一直停在占位页，但端口明明有响应 | 默认要求响应为 `text/html` 才认作 DSH（防止把陌生服务当 DSH 加载进外壳）。若你的入口返回其它类型，设 `DSH_HEALTH_REQUIRE_HTML=0` |
+| **双击打包版没反应**（无窗口、无日志、进程秒退） | 单实例锁冲突：打包版与开发版共用 `%APPDATA%\dsh-electron`，先启动的那个持有锁。先退掉另一个，或给后启动的加 `--user-data-dir=<另一个目录>`（见第九节末） |
 
 ### 从旧版（v1.0.0 / v1.1.0）切换到当前版本（重要）
 
