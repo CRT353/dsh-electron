@@ -3,6 +3,15 @@
 把 DSH Web GUI（默认 `http://127.0.0.1:3080`）装进独立 Electron 窗口，并附带
 **服务生命周期管理、归属校验、状态监测侧边栏与安全加固**。
 
+> **关于本仓库的范围**：这里只有外壳本身的源码、测试与文档。
+> 它原本是一个本地工作区（`08-AI_Workspace`）的一部分 —— 工作区里另有快捷方式区、
+> 会话日志工具箱（`dsh-session-tools`）、各版本分发产物的归档、退役留档等，
+> **那些内容不在本仓库内**。
+> 因此下文出现的 `03-shortcuts\…`、`02-projects\releases\…`、
+> `02-projects\source\dsh-session-tools\`、`02-projects\retired\…` 等路径，
+> 指的是**工作区中的相对位置，不是本仓库里的文件**。
+> 本仓库也**不发布预编译二进制**：`dist\` 由你自己 `npm run dist` 生成。
+
 当前版本 **v1.3.2**（v1.3.2 = 打包版身份修复；v1.3.1 = 审计修复版；v1.1.0 = 生命周期与安全加固版；v1.0.0 原始实现见快照 `d09f279`，标签 `v1.0.0-snapshot`）。
 
 **v1.3.2 变化（打包版与开发版的 userData 冲突）**
@@ -175,13 +184,13 @@ npm run gen-icon               # 重新生成 icon.png / build/icon.ico
 npm run dist                   # 打包安装包（需 electron-builder）
 ```
 
-启动入口在**快捷方式区**：`D:\Desktop\08-AI_Workspace\03-shortcuts\DSH.lnk`
+启动入口是工作区里的快捷方式 `03-shortcuts\DSH.lnk`
 （直接指向本项目的 `node_modules\electron\dist\electron.exe`，无控制台窗口）；
 同目录还有 `停止 DSH 服务.lnk`（等价于 `npm stop`）。
-若移动了项目目录，请重建这两个快捷方式。
+若移动了项目目录，请重建这两个快捷方式。直接用命令行时不需要它们：`npm start` 即可。
 
-本项目在工作区中的位置：`D:\Desktop\08-AI_Workspace\02-projects\source\dsh_electron\`
-（源代码区；各版本分发单独放在 `02-projects\releases\dsh-electron\<版本>\`）。
+本项目在工作区中属于源代码区 `02-projects\source\dsh_electron\`
+（各版本分发单独归档在 `02-projects\releases\dsh-electron\<版本>\`，均不在本仓库内）。
 
 ## 六、配置（环境变量）
 
@@ -265,7 +274,9 @@ npm run gen-icon                # 可选：重新生成图标
 npm run dist                    # 输出 dist/：NSIS 安装包 + 免安装单文件版
 ```
 
-> **产物与源码的版本对应**：已发布的产物在 `02-projects\releases\dsh-electron\<版本>\`。
+> **产物与源码的版本对应**：产物由 `npm run dist` 现场生成在 `dist\`，并按版本归档到
+> **工作区**的 `02-projects\releases\dsh-electron\<版本>\`（该目录不在本仓库内，
+> 本仓库不发布预编译二进制）。
 > 当前是 **v1.3.2**；更早的 `1.3.1\` = 审计修复版、`1.3.0\` = 修复前产物。
 >
 > 打包完请跑一次自动验收 —— 它直接读产物 asar 里的 `lib/config.js`（该文件不依赖 Electron），
