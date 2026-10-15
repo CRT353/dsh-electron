@@ -12,100 +12,23 @@
 > 指的是**工作区中的相对位置，不是本仓库里的文件**。
 > 本仓库也**不发布预编译二进制**：`dist\` 由你自己 `npm run dist` 生成。
 
-当前版本 **v1.3.2**（v1.3.2 = 打包版身份修复；v1.3.1 = 审计修复版；v1.1.0 = 生命周期与安全加固版；v1.0.0 原始实现见快照 `d09f279`，标签 `v1.0.0-snapshot`）。
+当前版本 **v1.3.2**。
 
-**v1.3.2 变化（打包版与开发版的 userData 冲突）**
+| 版本 | 主题 | 一句话 |
+|---|---|---|
+| `v1.3.2` | 打包版身份修复 | 打包版与开发版的 userData 分开，两版可同时运行 |
+| `v1.3.1` | 审计修复版 | 一次完整审计后的四组修复（误杀面、失败侧归属、"不知道"、日志与凭据） |
+| `v1.3.0` | 打包与隔离 | 视图独立会话分区、安全停止工具 `npm stop`、旧脚本退役 |
+| `v1.2.0` | 右键菜单 | 复制/粘贴/链接/服务操作等上下文菜单 |
+| `v1.1.0` | 生命周期与安全加固 | 单实例锁、归属六状态、默认拒绝的安全模型、43 项测试起步 |
+| `v1.0.0` | 原始实现 | 把 DSH 装进 Electron 窗口 |
 
-- **问题**：打包产物内 `package.json` 没有顶层 `productName`（`productName` 只写在 `build` 段，
-  electron-builder 不会把它带进 asar），而 Electron 的 `app.getPath('userData')` 由 `app.getName()`
-  决定、且**优先取顶层 `productName`**。于是打包版的 userData 是 `%APPDATA%\dsh-electron` ——
-  与开发版（`npm start`）**同一个目录**：两版的单实例锁落在同一处，**不能同时运行**，
-  后启动的那个一启动就静默退出（退出码 0、无窗口、无日志），表现出来就是"双击没反应"。
-  （这条是 2026-10-03 在真实产物上实测发现的，1.3.0/1.3.1 都存在。）
-- **修法**：在 `build` 段加 `extraMetadata: { productName: "DSH Desktop" }`。electron-builder 会把该
-  字段**只注入打包产物**的 `package.json`，源码那份不变 —— 于是开发版仍是 `dsh-electron`、
-  打包版变成 `DSH Desktop`，两者彻底分开。
-  ⚠ **反例**：直接在 `package.json` **顶层**加 `productName` 是**修不好**的 —— 开发版与打包版读的是
-  同一份内容，两边会一起变成 `DSH Desktop`，仍然共用同一个目录。
-- **效果**：打包版 userData 变为 `%APPDATA%\DSH Desktop`，与开发版可同时运行；打包版的本地状态
-  （DSH 页面 cookie/localStorage/缓存、窗口位置）改从新目录开始；卸载时要手动清理的目录也随之改变。
-- **验收已固化**：`node tools\verify-packaged-logpath.js` 在产物缺顶层 `productName` 时会打 `[WARN]`
-  并说明后果；修好后该项转为 PASS。
-
-**v1.3.1 变化（一次完整审计后的修复，按严重度分四组）**
-
-- **误杀面 / 静默回落**：默认身份判定模式由裸 `/dsh/i` 收紧为锚定 DSH 入口形态
-  （`@deepseek-ai/dsh`、`dsh(.exe|.cmd)`、`<...>/dsh/lib/bin.js`），不再把路径里偶然含 "dsh"
-  的无关 node 服务判成 DSH；`npm stop --port` 缺值/越界改为直接报错（旧实现静默回落到 3080，
-  打印的是 `NaN`、停掉的却是真实服务）；进程查询改用 `netstat -ano`（`-p TCP` 在 Windows 上
-  不含任何 IPv6 监听项，实测 0/43）。
-- **失败侧归属**：退出清理改为按时间预算分配（旧实现各步等待之和远超超时，`app.exit` 会在强杀与
-  兜底之前截断清理，服务被留成孤儿且不记录 `lastKill`）；就绪失败也承认归属（否则自己拉起的进程
-  永不被清理、之后重启永远卡在 port-busy）；netstat 受限时不再把正常服务误报成 orphan
-  （旧实现会打印字面量"原 pid null 已退出"）；命令行读不到时提供"spawn 相关性"恢复入口
-  （仅用户显式点击时生效）；Windows 用 `taskkill /T /F` 结束整棵进程树（`process.kill` 不连带
-  子进程，且 Windows 没有真正的"温和阶段"）；终止前用命令行复验一次身份（防 pid 复用误杀），
-  可信 pid 集合不再只增不减。
-- **"不知道"不再被当成"知道"**：健康探测不再跟随重定向（旧实现下"3xx → HTML 登录页"的陌生服务
-  会被认证成 identity=strong）；端口与进程查询区分"确定空闲 / 在用 / 不知道"；
-  `selftest --inspect` 在查不到监听者时以退出码 3 结束，而不是谎报"未查到监听者/端口空闲"；
-  `probeInternet` 不再把 4xx/5xx/重定向算作"网络在线"。
-- **日志与凭据**：`stream()` 先判级再截断（旧实现会丢掉落在 2000 字符之后的根因、并把它降级成
-  INFO，侧边栏"当前问题"因此为空）；脱敏补齐 `--token xxx`、`token: xxx`、`"token":"xxx"`、
-  `#token=x`、`Authorization: Basic`（`DSH_START_COMMAND` 里的凭据曾被逐字写进日志并长期留存）；
-  打包态（`__dirname` 落在不可写的 `resources/app.asar` 内）默认日志路径改用 userData 目录，
-  落盘失败也不再被静默吞掉。
-- 其它：`bool()` 容忍空白（cmd 的 `set VAR=1 && npm start` 不再导致"配置错误"拒绝启动）；
-  `ringSize` 负值不再死循环卡死主进程；`cause` 链超过 10 层显式标注；轮询加重入保护；
-  权限闸门在"来源证据缺失"或"跨源子框架"时一律拒绝；`preload` 接口数文档由 5 改为 6。
-- 会话日志工具箱（`02-projects/source/dsh-session-tools/`）另行修复：`truncate` 在首条记录损坏时
-  写出的文件加载器无法读取、`region.mjs` 字符/字节混用导致崩栈、空帧被判"健康"、明文布局报错
-  不友好、并发写入导致备份与产物同时丢数据（新增 size/mtime 复检与 fsync）。
-
-**v1.3.0 变化**
-
-- **DSH 视图默认使用独立会话分区**（`persist:dsh-view`）：Cookie / localStorage / 缓存与其它 Electron 应用隔离；
-  要回到旧行为（复用 Electron 默认会话）设 `DSH_VIEW_PARTITION=default`。
-- **"接管并重启"按钮改为常驻显示**（灰显 + 悬停原因），不再只在需要时才出现（避免找不到）。
-- **新增安全停止工具** `npm stop`（`tools/stop-dsh.js`）：只终止"经身份校验确认是 DSH"的进程，
-  用于替代 `dsh_off.ps1` 里"杀掉所有 node.exe"的做法（见第十节末）。
-- **旧脚本退役归档**：`dsh_on.ps1` / `dsh_off.ps1` 及其快捷方式已移入
-  `02-projects\retired\dsh_legacy_v0.0.0\`（版本号 `0.0.0`，附 `RIP.txt`），
-  当前唯一启停入口是 `03-shortcuts\DSH.lnk` + `npm stop`。
-- 打包落地：`npm install` + `npm run dist` 产出 Windows 安装包与免安装版。
-
-**v1.2.1 修复**：主动清理服务时不再把进程退出误记为"服务异常退出"（Windows 上 `process.kill` 会把退出码报成 1，
-旧实现会因此留下一句假的"当前问题"）；自检脚本新增"**cmd 包装进程场景**"，专门复现旧版 `taskkill` 杀不掉真服务
-的那个条件（见第八节）。
-
-**v1.2.0 新增**：**右键上下文菜单**（复制 / 剪切 / 粘贴 / 粘贴为纯文本 / 全选、链接与页面地址复制、重载、
-DevTools、服务操作、"复制状态摘要"），不想记快捷键时可以直接右键。菜单在主进程构建，
-**链接协议白名单与导航策略同样生效**。
+**逐版本改了什么（含每个坑的实测证据）见 [`CHANGELOG.md`](./CHANGELOG.md)** ——
+本文件不重复记述变更历史。
 
 ---
 
-## 一、v1.1.0 修了什么
-
-| # | v1.0.0 的问题（实测证据） | v1.1.0 的做法 | 对应代码 |
-|---|---|---|---|
-| 1 | **没有单实例锁**：可同时开多个实例互相抢 3080 端口 | `app.requestSingleInstanceLock()`；第二实例只唤醒已有窗口后退出 | `main.js` 入口段 |
-| 2 | **重启不等端口释放**：`kill` 完立刻重新拉起，两个实例抢端口 → `plugin tree failed to load` boot 失败（9/23、9/29 各一次） | 重启流程改为 `清理 → 轮询等端口释放 → 再拉起`；端口不让出就放弃拉起并如实报错 | `lib/service.js#restart` |
-| 3 | **`taskkill /T /F` 永远失败（日志 14/14）**：记录的是 `shell:true` 产生的 cmd 包装进程 pid，真服务是它的子进程，不在该 pid 的树里 | 不再使用 `shell:true`；`dsh` 在 Windows 上解析为 `dsh.cmd` 并用 `cmd.exe /d /s /c` 调用；**权威身份改为"监听 DSH 端口的真实 pid"**（netstat/lsof/ss 解析 + 命令行读取），强杀针对真实 pid | `lib/procs.js`、`lib/service.js#_adoptListener` |
-| 4 | **端口兜底会杀掉任何监听 3080 的进程**（注释还写"绝对安全"） | 三级兜底只对通过身份校验的 pid 生效：① 本程序记录/观察到的 pid ② 进程名在白名单且命令行匹配 dsh；否则**默认拒绝**并打印补救方式（`DSH_ALLOW_UNVERIFIED_KILL=1`） | `lib/procs.js#decideKill` |
-| 5 | **状态会漂移却谎报"本程序管理"**：pid 已死、服务仍在跑（孤儿），侧边栏显示错误的 PID | 每次轮询校验 pid 存活并识别归属：`reuse / foreign / managed / orphan / takeover / stopped`，漂移时如实上报并给出"接管"入口，且不再声称 managed | `lib/service.js#refresh`、`renderer/sidebar.js` |
-| 6 | **日志把根因截断**（`slice(0,300)`），boot 失败的 cause/stack 全丢 | 日志支持完整堆栈与 `cause` 链、单条 8KB 上限（超出标注截断长度）、超 2MB 自动轮转、**凭据脱敏**（`token=`/Bearer/URL userinfo/长 token），内存环形缓冲供界面显示"最近错误" | `lib/log.js` |
-| 7 | **没有打包能力**（只有指向 `node_modules\electron\dist\electron.exe` 的快捷方式，图标 658B） | 内置 electron-builder 配置（NSIS/portable/dmg/AppImage，asar），`npm run gen-icon` 纯 Node 生成 256px PNG 与多尺寸 ICO | `package.json#build`、`tools/gen-icon.js` |
-| 8 | **零自动化测试**，只有一个假服务脚本 | 43 个用例：命令/端口解析、终止校验、健康判定、安全策略、日志脱敏与轮转、**真实子进程 + 真实端口**的生命周期集成测试，以及用假 Electron 驱动的 `main.js` 装配层烟雾测试 | `tests/*.test.js` |
-| 9 | **健康检查过宽**：任意 `<500` 响应都算"DSH 活着"；单次抖动即翻红 | 区分 `reachable`（有响应）与 `ok`（身份确认：<500 且 `text/html`），弱身份在界面标注；状态用 `FlapGuard` 消抖（连续 2 次失败才判离线） | `lib/health.js` |
-| 10 | **跨平台假支持**：`taskkill`/`netstat -ano` 是 Windows 专有；macOS 下窗口全关不清理服务 | POSIX 走 `lsof` → `ss` + `SIGTERM/SIGKILL`；`window-all-closed` 在所有平台都清理并退出 | `lib/procs.js`、`main.js` |
-
-附带修好的小问题：视图加载失败后不会自愈（现在服务恢复会自动重载，且最多重试 5 次并退避）、
-服务启动期间右侧一片空白（现在显示本地占位页）、并发 `ensure()` 会重复拉起（现在用 in-flight Promise 去重）、
-重启/接管结果只在日志里（现在侧边栏有操作结果提示）。
-
----
-
-## 二、功能
+## 一、功能
 
 1. **自动拉起 / 复用**：窗口立即出现；服务未运行则拉起，已运行则复用（且**不接管、不清理**外部服务）。
 2. **精确清理**：只清理"本程序拉起的服务"，三级兜底且带身份校验；外部服务的进程绝不动。
@@ -133,7 +56,7 @@ DevTools、服务操作、"复制状态摘要"），不想记快捷键时可以�
 
 ---
 
-## 三、安全模型（v1.1.0 新增）
+## 二、安全模型
 
 设计原则：**默认拒绝（fail-closed）、最小权限、身份可验证、行为可审计**。
 
@@ -164,13 +87,13 @@ DevTools、服务操作、"复制状态摘要"），不想记快捷键时可以�
 
 ---
 
-## 四、运行前提
+## 三、运行前提
 
 - Node.js（含 npm）；建议 Node ≥ 22.8（测试脚本用到 `--test-isolation=none`）
 - `dsh` 命令可用，或用 `DSH_START_COMMAND` 指定
 - 已安装依赖：`npm install`（会下载 Electron；打包另需 electron-builder）
 
-## 五、使用
+## 四、使用
 
 ```powershell
 npm install                    # 首次
@@ -190,9 +113,9 @@ npm run dist                   # 打包安装包（需 electron-builder）
 若移动了项目目录，请重建这两个快捷方式。直接用命令行时不需要它们：`npm start` 即可。
 
 本项目在工作区中属于源代码区 `02-projects\source\dsh_electron\`
-（各版本分发单独归档在 `02-projects\releases\dsh-electron\<版本>\`，均不在本仓库内）。
+（各版本分发单独归档在 `02-projects\releases\dsh_electron\<版本>\`，均不在本仓库内）。
 
-## 六、配置（环境变量）
+## 五、配置（环境变量）
 
 | 变量 | 默认值 | 说明 |
 |---|---|---|
@@ -218,7 +141,7 @@ npm run dist                   # 打包安装包（需 electron-builder）
 | `DSH_LOG_MAX_BYTES` / `DSH_LOG_MAX_MESSAGE` | `2097152` / `8192` | 轮转阈值 / 单条上限 |
 | `DSH_LOG_REDACT_TOKENS` | `1` | 是否脱敏超长 token |
 
-## 七、状态语义（侧边栏"服务来源"）
+## 六、状态语义（侧边栏"服务来源"）
 
 | mode | 含义 | 退出时会清理吗 |
 |---|---|---|
@@ -230,7 +153,7 @@ npm run dist                   # 打包安装包（需 electron-builder）
 | `takeover` | 端口被其它进程接管，已不属于本程序 | ❌ 并明确提示 |
 | `stopped` | 服务已停止，可直接重启 | — |
 
-## 八、测试与自检
+## 七、测试与自检
 
 ```powershell
 npm test                        # 119 项：单测 + 集成测试 + 装配层 + 渲染层 + 桥接契约 + 自检退出码
@@ -273,7 +196,7 @@ node tools\selftest.js --inspect 3080   # 只读：看 3080 被谁监听（不�
   不可用会明确提示并以退出码 3 结束，而不是把环境问题伪装成代码问题。
 - 任何一次测试/自检都不会操作 3080（脚本内置断言拒绝），需要查看 3080 时只做只读检查。
 
-## 九、打包
+## 八、打包
 
 ```powershell
 npm install                     # 同步 devDependencies（含 electron-builder）
@@ -282,9 +205,10 @@ npm run dist                    # 输出 dist/：NSIS 安装包 + 免安装单�
 ```
 
 > **产物与源码的版本对应**：产物由 `npm run dist` 现场生成在 `dist\`，并按版本归档到
-> **工作区**的 `02-projects\releases\dsh-electron\<版本>\`（该目录不在本仓库内，
+> **工作区**的 `02-projects\releases\dsh_electron\<版本>\`（该目录不在本仓库内，
 > 本仓库不发布预编译二进制）。
-> 当前是 **v1.3.2**；更早的 `1.3.1\` = 审计修复版、`1.3.0\` = 修复前产物。
+> 当前是 **v1.3.2**；各版本的用途与"该用哪个"见
+> `02-projects\releases\dsh_electron\README.md`。
 >
 > 打包完请跑一次自动验收 —— 它直接读产物 asar 里的 `lib/config.js`（该文件不依赖 Electron），
 > 因此**不需要人工双击 GUI** 就能验收"日志路径 / userData"这一类打包态行为：
@@ -296,8 +220,8 @@ npm run dist                    # 输出 dist/：NSIS 安装包 + 免安装单�
 >
 > 它覆盖：打包态默认日志路径不得落进不可写的 `app.asar`、`<asar>\load-status.log` 写入确实抛
 > `ENOENT` 的实证、开发态 / `DSH_LOG_FILE` / 兜底路径三条不回归契约，以及**产物是否带顶层
-> `productName`**（缺了就是"打包版与开发版共用 userData"那个坑，见 v1.3.2 变化一节）。
-> 每次发布的实测结论记在该版本 `RELEASE.txt` 的"验证状态"一节。
+> `productName`**（缺了就是"打包版与开发版共用 userData"那个坑，见 `CHANGELOG.md` 的 v1.3.2 条目）。
+> 每次发布的实测结论记在该版本归档目录的 `RELEASE.txt` 里。
 
 | 文件 | 用途 |
 |---|---|
@@ -323,7 +247,7 @@ npm run dist
   但窗口/任务栏/托盘图标已由 `icon.png` 提供，功能不受影响。
   想要 exe 也带自己的图标：开启 Windows 开发者模式（或管理员终端）后把该项改回 `true` 重新构建。
 
-> **打包版与开发版的 userData 隔离（v1.3.2 已修）**
+> **打包版与开发版的 userData 隔离（v1.3.2 起）**
 > 打包产物内的 `package.json` 若没有顶层 `productName`，Electron 会用 `name` 作为应用标识，
 > 于是打包版与开发版（`npm start`）的 userData 都是 `%APPDATA%\dsh-electron` ——
 > 两版单实例锁落在同一目录，**不能同时运行**：后启动的**一启动就静默退出**
@@ -334,7 +258,7 @@ npm run dist
 > 两版仍共用 DSH 端口：同时运行时第二个会以 `reuse`（外部服务）身份复用端口——
 > 不冲突，但状态归属会看着别扭。
 
-## 十、故障排查
+## 九、故障排查
 
 | 现象 | 原因与处理 |
 |---|---|
@@ -345,7 +269,7 @@ npm run dist
 | 日志出现 `plugin tree failed to load`（含完整堆栈与 cause） | DSH 自身 boot 失败，通常是端口被占或配置问题；v1.1.0 已保证不会因为"重启不等端口"制造这个错误 |
 | 启动报"DSH_URL 指向非本机地址" | 安全默认值。确需远端请设 `DSH_ALLOW_REMOTE=1` |
 | 右侧一直停在占位页，但端口明明有响应 | 默认要求响应为 `text/html` 才认作 DSH（防止把陌生服务当 DSH 加载进外壳）。若你的入口返回其它类型，设 `DSH_HEALTH_REQUIRE_HTML=0` |
-| **双击打包版没反应**（无窗口、无日志、进程秒退） | 只发生在 ≤1.3.1：打包版与开发版共用 `%APPDATA%\dsh-electron`，先启动的那个持有单实例锁。升级到 v1.3.2（userData 已隔离）或先退掉另一个；临时绕过可加 `--user-data-dir=<另一个目录>`（见第九节末） |
+| **双击打包版没反应**（无窗口、无日志、进程秒退） | 只发生在 ≤1.3.1：打包版与开发版共用 `%APPDATA%\dsh-electron`，先启动的那个持有单实例锁。升级到 v1.3.2（userData 已隔离）或先退掉另一个；临时绕过可加 `--user-data-dir=<另一个目录>`（见第八节末） |
 
 ### 从旧版（v1.0.0 / v1.1.0）切换到当前版本（重要）
 
@@ -364,13 +288,9 @@ npm run dist
 ### 旧的 `dsh_on.ps1` / `dsh_off.ps1`：已退役并归档
 
 它们曾是这个项目的前身（2026-08-22 启用，职责：一键拉起并开浏览器 / 一键停止）。
-现在职责已全部由本程序接管，**已归档到 `02-projects\retired\dsh_legacy_v0.0.0\`**
-（版本号 `0.0.0`，附 `RIP.txt` 墓志），不再参与日常启停：
-
-| 旧脚本 | 它做什么 | 为什么退役 |
-|---|---|---|
-| `dsh_on.ps1` | 在**可见终端前台**运行 `dsh web --host 127.0.0.1 --port 3080`，并另起隐藏进程等端口就绪后**打开系统浏览器** | 拉起 + 开窗已由本程序自动完成；它启动的服务属于"外部服务"，本程序只能 `reuse`（只复用不管理），"重启服务"会灰掉——那正是"接管并重启"按钮唯一会亮起来的场景 |
-| `dsh_off.ps1` | **终止机器上所有 `node.exe`** | 风险高：会连带杀掉与本项目无关的 Node 进程。已由 `npm stop` 取代（只终止经身份校验确认是 DSH 的那个进程） |
+现在职责已全部由本程序接管，**已归档到工作区的 `02-projects\retired\dsh_legacy_v0.0.0\`**
+（版本号 `0.0.0`，附 `RIP.txt` 墓志），不再参与日常启停。
+两个脚本各自做了什么、为什么退役，见 `CHANGELOG.md` 末节。
 
 当前唯一的启停方式：
 
@@ -384,7 +304,7 @@ npm run stop:dry             # 只看会终止谁，不动任何进程
 但**不要**让它与 `dsh_electron` 同时"拥有"同一个服务——一边清理、另一边还在原地，只会制造 `orphan`/`takeover`。
 对应的两个 `.lnk` 也一起归档了（它们指向原绝对路径，搬走后已失效，仅作纪念）。
 
-## 十一、架构
+## 十、架构
 
 ```
 npm start
@@ -401,7 +321,7 @@ npm start
          └─ 归属漂移检测：managed / reuse / foreign / orphan / takeover / stopped
 ```
 
-## 十二、文件说明
+## 十一、文件说明
 
 | 文件 | 作用 |
 |---|---|
@@ -415,4 +335,6 @@ npm start
 | `tools/stop-dsh.js` | 安全停止工具（`npm stop`）：带身份校验，不会误杀其它 node 进程 |
 | `tools/gen-icon.js` | 纯 Node 生成 `icon.png` 与 `build/icon.ico` |
 | `build/icon.ico` `build/icon.png` | 打包资源（由 `gen-icon` 生成） |
+| `CHANGELOG.md` | 逐版本变更记录（含每个坑的实测证据） |
+| `NEXT-STEPS.md` | 会话交接文档：未完成的待办与踩坑记录，**不是长期文档** |
 | `load-status.log` | 运行日志（自动轮转，凭据脱敏） |
