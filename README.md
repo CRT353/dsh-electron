@@ -11,6 +11,11 @@
 > `02-projects\source\dsh-session-tools\`、`02-projects\retired\…` 等路径，
 > 指的是**工作区中的相对位置，不是本仓库里的文件**。
 > 本仓库也**不发布预编译二进制**：`dist\` 由你自己 `npm run dist` 生成。
+>
+> **给 AI 的规范**：工作区根目录有一份 `AGENTS.md`（开工先读：指路 + 本机环境陷阱）。
+> 本项目的名字在本仓库内部是上游真名 `dsh-electron`（见 `package.json` 与 GitHub）；
+> 工作区里的**目录名**统一用 `dsh_electron`（源码目录与归档目录同名），
+> 这条命名规则见工作区根 README 第七节。
 
 当前版本 **v1.3.2**。
 
