@@ -63,7 +63,7 @@ git tag --list --format='%(refname:short)  %(objectname:short)  %(subject)'
 - 测试项数由 43 增至 118，随后增至 119（见 v1.2.1 与 README 第八节）。
 - 构建来源提交 `0fd1df1`（标签 `v1.3.1`）。
 
-> **同一轮的外围修复**：会话日志工具箱（工作区里的 `02-projects/source/dsh-session-tools/`，
+> **同一轮的外围修复**：会话日志工具箱（工作区里的 `02-projects/dev/dsh-session-tools/`，
 > 不在本仓库内）另有独立修复 —— `truncate` 在首条记录损坏时写出的文件加载器无法读取、
 > `region.mjs` 字符/字节混用导致崩栈、空帧被判"健康"、明文布局报错不友好、
 > 并发写入导致备份与产物同时丢数据（新增 size/mtime 复检与 fsync）。

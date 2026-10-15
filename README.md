@@ -7,8 +7,8 @@
 > 它原本是一个本地工作区（`08-AI_Workspace`）的一部分 —— 工作区里另有快捷方式区、
 > 会话日志工具箱（`dsh-session-tools`）、各版本分发产物的归档、退役留档等，
 > **那些内容不在本仓库内**。
-> 因此下文出现的 `03-shortcuts\…`、`02-projects\releases\…`、
-> `02-projects\source\dsh-session-tools\`、`02-projects\retired\…` 等路径，
+> 因此下文出现的 `03-shortcuts\…`、`02-projects\release\…`、
+> `02-projects\dev\dsh-session-tools\`、`02-projects\retired\…` 等路径，
 > 指的是**工作区中的相对位置，不是本仓库里的文件**。
 > 本仓库也**不发布预编译二进制**：`dist\` 由你自己 `npm run dist` 生成。
 >
@@ -117,8 +117,8 @@ npm run dist                   # 打包安装包（需 electron-builder）
 同目录还有 `停止 DSH 服务.lnk`（等价于 `npm stop`）。
 若移动了项目目录，请重建这两个快捷方式。直接用命令行时不需要它们：`npm start` 即可。
 
-本项目在工作区中属于源代码区 `02-projects\source\dsh_electron\`
-（各版本分发单独归档在 `02-projects\releases\dsh_electron\<版本>\`，均不在本仓库内）。
+本项目在工作区中属于源代码区 `02-projects\dev\dsh_electron\`
+（各版本分发单独归档在 `02-projects\release\dsh_electron\<版本>\`，均不在本仓库内）。
 
 ## 五、配置（环境变量）
 
@@ -210,10 +210,10 @@ npm run dist                    # 输出 dist/：NSIS 安装包 + 免安装单�
 ```
 
 > **产物与源码的版本对应**：产物由 `npm run dist` 现场生成在 `dist\`，并按版本归档到
-> **工作区**的 `02-projects\releases\dsh_electron\<版本>\`（该目录不在本仓库内，
+> **工作区**的 `02-projects\release\dsh_electron\<版本>\`（该目录不在本仓库内，
 > 本仓库不发布预编译二进制）。
 > 当前是 **v1.3.2**；各版本的用途与"该用哪个"见
-> `02-projects\releases\dsh_electron\README.md`。
+> `02-projects\release\dsh_electron\README.md`。
 >
 > 打包完请跑一次自动验收 —— 它直接读产物 asar 里的 `lib/config.js`（该文件不依赖 Electron），
 > 因此**不需要人工双击 GUI** 就能验收"日志路径 / userData"这一类打包态行为：

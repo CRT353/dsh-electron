@@ -12,7 +12,7 @@
 | 位置 | 状态 |
 |---|---|
 | `source/dsh_electron/` （应用仓库） | 分支 `main`，版本号 **1.3.2**，标签 `v1.3.2` → `6ce6c0f`（= 1.3.2 产物的构建来源） |
-| `D:\Desktop\08-AI_Workspace\`（工作区仓库） | 分支 `main`；gitlink 指向应用仓库的某个提交 —— **本行不再写死编号**，用 `git ls-files -s 02-projects/source/dsh_electron` 查 |
+| `D:\Desktop\08-AI_Workspace\`（工作区仓库） | 分支 `main`；gitlink 指向应用仓库的某个提交 —— **本行不再写死编号**，用 `git ls-files -s 02-projects/dev/dsh_electron` 查 |
 | 测试 | 应用：`npm test` → **119/119**；会话工具箱：`node --test --test-isolation=none session-log-tools.test.mjs` → **14/14** |
 | DSH 服务 | 由 Electron 外壳管理，`127.0.0.1:3080`。运行中的是**开发版**外壳（v1.3.1 代码，启动于 10-03 12:09；1.3.2 只改了打包配置，对开发态运行时无影响，**不必为它重启**） |
 
@@ -147,9 +147,9 @@
 - 应用：`README.md`（**v1.3.1 变化**一节逐组记录了本轮改了什么、旧实现的具体表现）、`package.json`、`main.js`、`lib/*.js`、
   `tools/*.js`（含本轮新增的 `verify-packaged-logpath.js`）、`tests/*.test.js`（119 项）、`renderer/*`。
 - 会话工具箱：`source\dsh-session-tools\README.md` + `session-log-*.mjs` + `session-log-tools.test.mjs`（14 项）。
-- 已发布产物：`02-projects\releases\dsh_electron\1.3.1\`（`SHA256SUMS.txt` + `RELEASE.txt`，
+- 已发布产物：`02-projects\release\dsh_electron\1.3.1\`（`SHA256SUMS.txt` + `RELEASE.txt`，
   后者第五节"验证状态"记的就是本轮实测结论）。
 - 标签：`v1.3.1` → `0fd1df1`（= 1.3.1 产物的构建来源）。后续提交都是**发布之后**的提交，未打标签。
 - 上一轮（审计修复）每个档位都是独立提交，任一提交都是干净回退点：
-  `git -C 02-projects\source\dsh_electron log --oneline 3175149..0fd1df1`
+  `git -C 02-projects\dev\dsh_electron log --oneline 3175149..0fd1df1`
   （`3175149` 是审计修复开始前的基线，`0fd1df1` = 标签 `v1.3.1`）。
