@@ -64,6 +64,14 @@ let cleanupDone = false;
 let cleanupRunning = false;
 let service = null;
 
+/**
+ * 探测/加载该用哪个地址：拿到令牌就用带 token 的，否则回落到配置里的基础地址。
+ * DSH 0.2 起本地 Web 服务需要进程级令牌，裸地址会 401。
+ */
+function dshTargetUrl() {
+  return (service && typeof service.currentUrl === 'function') ? service.currentUrl() : config.url;
+}
+
 const dshGuard = new FlapGuard({ failThreshold: config.dshFailThreshold, recoverThreshold: 1 });
 const netGuard = new FlapGuard({ failThreshold: config.netFailThreshold, recoverThreshold: 1 });
 let prevStable = { dsh: null, net: null };
@@ -207,8 +215,12 @@ function maybeLoadDshView(reason) {
   viewState.lastAttemptAt = now;
   viewState.state = 'loading';
   viewState.error = null;
-  logger.info(`加载 DSH 视图（${reason}，第 ${viewState.attempts} 次）: ${safeUrl(config.url)}`);
-  dshView.webContents.loadURL(config.url).catch((err) => {
+  // 视图必须加载"已认证 URL"：DSH 0.2 起裸地址会 401，窗口内会是一片空白的 401 页。
+  // 日志里只记脱敏后的地址（safeUrl 会把 token 抹掉），避免把令牌写进日志文件。
+  const viewUrl = dshTargetUrl();
+  logger.info(`加载 DSH 视图（${reason}，第 ${viewState.attempts} 次）: ${safeUrl(viewUrl)}`);
+  // 注意：safeUrl 只用于**显示**；loadURL 用的是真实带 token 的地址。
+  dshView.webContents.loadURL(viewUrl).catch((err) => {
     viewState.state = 'failed';
     viewState.error = err && err.message ? err.message : String(err);
     logger.warn(`DSH 视图加载失败: ${viewState.error}`);
@@ -240,7 +252,9 @@ async function pollStatus() {
 
 async function pollStatusOnce() {
   const [dshResult, netResult] = await Promise.all([
-    probeDsh({ url: config.url, timeoutMs: config.checkTimeoutMs, requireHtml: config.requireHtml }),
+    // 用 currentUrl()：DSH 0.2 起服务要令牌，拿到令牌后必须用带 token 的地址探测，
+    // 否则拿到 401、外壳会一直判"未就绪"（旧实现即如此）。
+    probeDsh({ url: dshTargetUrl(), timeoutMs: config.checkTimeoutMs, requireHtml: config.requireHtml }),
     config.netCheck
       ? probeInternet({ url: config.netCheckUrl, timeoutMs: config.checkTimeoutMs })
       : Promise.resolve({ ok: true, skipped: true, reason: 'disabled' })
@@ -688,7 +702,9 @@ function bootstrap() {
     },
     logger,
     exec,
-    probeHealth: () => probeDsh({ url: config.url, timeoutMs: config.checkTimeoutMs, requireHtml: config.requireHtml }),
+    // 注入的探针也要带令牌：service 是本模块级变量，但构造时它还没赋值，
+    // 所以这里用惰性取值（调用发生时 service 已存在）。
+    probeHealth: () => probeDsh({ url: dshTargetUrl(), timeoutMs: config.checkTimeoutMs, requireHtml: config.requireHtml }),
     findListenerPid: (port, host) => findListenerPid(port, { host, exec })
   });
 

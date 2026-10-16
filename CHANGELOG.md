@@ -13,6 +13,34 @@ git tag --list --format='%(refname:short)  %(objectname:short)  %(subject)'
 
 ---
 
+## v1.4.0 —— DSH 0.2 令牌适配
+
+- **问题**：DSH 0.2 起本地 Web 服务加了**进程级令牌门禁**：密钥在启动时随机生成
+  （`randomBytes(32)`）、**不落盘、也无法由外部指定**，只印在服务 stdout 的一行上
+  （`dsh web: http://127.0.0.1:3080/?token=<secret>`）。不带令牌访问 `/`、`/index.html`、
+  `/api` 全部返回 **401**（实测：裸响应、无 Content-Type、无正文）。
+  对本外壳有两处硬影响：
+  ① 健康检查发裸 GET 得 401，`status < 500` 为假 ⇒ **永远判"未就绪"**，
+     60 秒后报"服务未在 60s 内就绪"（而服务其实活得好好的，日志里已有
+     "端口 3080 由疑似 dsh 的 pid 服务，但本程序没有记录到它"）；
+  ② 视图用裸地址加载会得到一片 401（实测日志：`DSH 视图加载失败: ERR_ABORTED (-3)`）。
+- **修法**：外壳本来就是拉起服务的一方，也本来就在读它的 stdout（`_spawnService` 里
+  已有 `proc.stdout.on('data', ...)`）。在那里**先于日志**解析出带令牌的地址
+  （`parseAuthenticatedUrl`，取最后一条，兼容截断/多行/LAN 提示），存进
+  `state.authenticatedUrl`，再由新增的 `currentUrl()` 提供给健康检查与视图加载。
+  **必须在日志之前取** —— `logger.stream` 会按凭据规则脱敏 token，脱敏后就取不到了。
+  日志里始终只写 `safeUrl()` 处理过的地址，令牌不落日志。
+- **改动**：`lib/service.js`（解析函数 + stdout 捕获 + `currentUrl()` + 导出解析函数）、
+  `main.js`（新增 `dshTargetUrl()`；`pollStatusOnce`、注入的 `probeHealth`、
+  视图 `loadURL` 三处改用它）。
+- **测试**：新增 `tests/dummy-dsh-02.js`（复现 0.2 令牌门禁的假服务：启动打印令牌行、
+  无令牌 401、带令牌 200+text/html）与 `tests/token-adapter.test.js`（6 项：5 项解析单测
+  + 1 项真实子进程/真实端口的端到端验证）。应用测试 119 → **125 项，全过**。
+- **能力边界（有意为之）**：令牌只在"本外壳拉起服务"的那次 stdout 里，因此
+  **外部已运行的服务不再能被直接复用**（拿不到令牌）—— 这是 DSH 0.2 令牌模型的固有结果。
+  要交回外壳管理，先停掉外部服务再由外壳拉起。
+
+---
 ## v1.3.2 —— 打包版身份修复
 
 - **问题**：打包产物内 `package.json` 没有顶层 `productName`（`productName` 只写在 `build` 段，
