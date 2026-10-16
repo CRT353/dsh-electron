@@ -249,7 +249,7 @@ npm run dist                    # 输出 dist/：NSIS 安装包 + 免安装单�
 > **产物与源码的版本对应**：产物由 `npm run dist` 现场生成在 `dist\`，并按版本归档到
 > **工作区**的 `02-projects\release\dsh_electron\<版本>\`（该目录不在本仓库内，
 > 本仓库不发布预编译二进制）。
-> 当前是 **v1.3.2**；各版本的用途与"该用哪个"见
+> 当前是 **v1.4.0**；各版本的用途与"该用哪个"见
 > `02-projects\release\dsh_electron\README.md`。
 >
 > 打包完请跑一次自动验收 —— 它直接读产物 asar 里的 `lib/config.js`（该文件不依赖 Electron），
