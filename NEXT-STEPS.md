@@ -11,14 +11,56 @@
 
 | 位置 | 状态 |
 |---|---|
-| `02-projects/dev/dsh_electron/` （应用仓库） | 分支 `main`，版本号 **1.4.1**（提交 `5089dd6`）|
+| `02-projects/dev/dsh_electron/` （应用仓库） | 分支 `main`，版本号 **1.4.1**（提交 `5089dd6`；其后只有文档提交）|
 | `D:\Desktop\08-AI_Workspace\`（工作区仓库） | 分支 `main`；gitlink 指向应用仓库的某个提交 —— **本行不再写死编号**，用 `git ls-files -s 02-projects/dev/dsh_electron` 查 |
-| 测试 | 应用：`npm test` → **126/126**；会话工具箱：`node --test --test-isolation=none session-log-tools.test.mjs` → **14/14** |
+| 测试 | 应用：`npm test` → **126/126**；会话工具箱：`node --test --test-isolation=none session-log-tools.test.mjs` → **21/21** |
 | **DSH 版本** | **`0.2.0-rc.2`**（2026-10-16 由 `0.1.1-rc.2` 升级，**破坏性变更**：Web 服务加了令牌 + 会话 Cookie 两步认证）|
 | DSH 服务 | 由 Electron 外壳管理，`127.0.0.1:3080`。**外壳必须 ≥ v1.4.1 才能配 DSH 0.2**（v1.4.0 及更早会卡在"服务未就绪"）|
 | **插件层级** | 见本仓库 **[DSH-PLUGIN-LAYERS.md](./DSH-PLUGIN-LAYERS.md)** —— 想做层级/溯源相关开发，**先读它** |
+| **会话格式** | 当前日志为 **format v4**（文件名 `session.v4.jsonl.zstd`）；盘上仍有 53 份 **v0**（`session.jsonl.zstd`）。解码模型见 `02-projects/dev/dsh-session-tools/README.md` 的「解码模型」一节 |
 
 先跑一次 `git -C <仓库> log --oneline -20` 与 `npm test` 复核，再动任何东西。
+
+> **2026-10-17 交接（会话工具箱被 DSH 0.2 打破 → 修复 + 体检脚本补两项）**
+>
+> **发生了什么**：`npm test` 一直是绿的，但**会话工具箱整个跑不起来** ——
+> `node --test session-log-tools.test.mjs` 在 import 阶段就 `SyntaxError`：
+> `dsh-session/lib/types/index.js does not provide an export named 'decodeStorageRecord'`。
+> 根因：DSH **0.2.0-rc.2 删除了 `decodeStorageRecord`**，而旧代码用**写死的绝对路径**
+> （`D:/nvm/v24.18.0/...`）import 这个内部导出 —— 换 Node 版本也会一起断。
+>
+> **修法**（详见 `02-projects/dev/dsh-session-tools/README.md` 的「解码模型」）：
+> 新增桥接层 `session-log-dsh.mjs`：**运行时定位** DSH 安装（从 `process.execPath` 推导，
+> 支持 `DSH_PACKAGE_ROOT` 覆盖），按日志头行的 `version` 取该版本**已发布**的物理 codec
+> （`releasedV0…V4SessionFormatCodec`），用 `require(ESM)`（Node ≥ 22.12）同步加载。
+>
+> **踩到的三个坑（都写进了 README，别重演）**：
+> ① **一行 ≠ 一个事件**：format v0 有"紧凑 run 行"（一行 12 个事件）。本机某份 v0 日志有
+> **1840** 个（359157 事件），另一份 **9287** 个（340765 事件）。按形状直读会把这两份**健康**
+> 日志报成"大量不可解析行"。
+> ② **codec 是有状态的全量解码器**：必须从第 1 行顺序喂；「单事件行走快速路径、复杂的才给
+> codec」会让它只拿到后半段 → run 行展开成 0 个事件 → **健康日志被误报成 seq gap**（真踩了）。
+> ③ **recovery 要用 `strict`**：DSH 自己读日志用 `recoverable`，它会记下首个问题后**静默吞掉
+> 后续所有行**、直到 `turn/end` 才抛 —— 报错行号误导，而且把工具直接崩掉。`strict` 精确到行，
+> 再由 `safeDecodeRow` 归一成 `seq-gap`/`unparsable`；**解不了**（没装 DSH）一律报
+> 「无法判定（不是损坏）」并拒绝改文件，绝不谎报损坏。
+>
+> **顺带修掉的既有缺陷**：`region.mjs` 在**健康**日志上把"尾部连续性"的期望起点算成
+> 全文件事件总数 → 一份健康日志被报成"异常次数 173661"。现已按关注点之前的事件数计算。
+>
+> **测试**：14 → **21** 项（新增：接线表、v4 双路径一致、整份走 codec、诚实降级契约、
+> codec 抛错不崩栈、region 健康路径）。另在**真实日志**上验收：4 份（2×v0 + 2×v4）全部判为健康。
+>
+> **体检脚本补了两项**（`tools/workspace-check.ps1`，此前 `03-shortcuts/README.md` 声称
+> "已固化进体检脚本"，实际**从未实现**）：
+> 第 7 项扫 `03-shortcuts/*.lnk` 的目标/工作目录/**参数里的路径**；
+> 第 8 项校验**文档里的工作区路径引用**能否解析。第 8 项当场抓出 4 处失效引用（都已修）：
+> 根 `README.md` 的 `02-projects/prog-guide`（3 处）、`release/dsh_electron/README.md` 的
+> `source/dsh_electron/node_modules`。另外根 README 的"环境摘要"曾称 python / ESP-IDF
+> **不可用**，与 `ENVIRONMENT.md` 直接矛盾 —— 已改为与之一致。
+>
+> **遗留（未变）**：`release/dsh_electron/` 里仍**没有 `1.4.1/` 分发产物**（只改了源码，没跑
+> `npm run dist`）。升级与回滚步骤在 `D:\Desktop\09-DSH升级操作\升级操作.md`。
 
 > **2026-10-16 交接（DSH 0.2 升级 + 外壳适配）**
 >
@@ -186,8 +228,9 @@
 
 ## 六、索引（要找东西从这里进）
 - 应用：`README.md`（**v1.3.1 变化**一节逐组记录了本轮改了什么、旧实现的具体表现）、`package.json`、`main.js`、`lib/*.js`、
-  `tools/*.js`（含本轮新增的 `verify-packaged-logpath.js`）、`tests/*.test.js`（119 项）、`renderer/*`。
-- 会话工具箱：`source\dsh-session-tools\README.md` + `session-log-*.mjs` + `session-log-tools.test.mjs`（14 项）。
+  `tools/*.js`（含 `verify-packaged-logpath.js`）、`tests/*.test.js`（**126 项**）、`renderer/*`。
+- 会话工具箱：`02-projects\dev\dsh-session-tools\README.md`（**「解码模型」一节是改它之前必读**）+
+  `session-log-*.mjs` + `session-log-dsh.mjs`（DSH codec 桥接层）+ `session-log-tools.test.mjs`（**21 项**）。
 - 已发布产物：`02-projects\release\dsh_electron\1.3.1\`（`SHA256SUMS.txt` + `RELEASE.txt`，
   后者第五节"验证状态"记的就是本轮实测结论）。
 - 标签：`v1.3.1` → `0fd1df1`（= 1.3.1 产物的构建来源）。后续提交都是**发布之后**的提交，未打标签。
