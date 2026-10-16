@@ -11,17 +11,55 @@
 
 | 位置 | 状态 |
 |---|---|
-| `source/dsh_electron/` （应用仓库） | 分支 `main`，版本号 **1.3.2**，标签 `v1.3.2` → `6ce6c0f`（= 1.3.2 产物的构建来源） |
+| `02-projects/dev/dsh_electron/` （应用仓库） | 分支 `main`，版本号 **1.4.1**（提交 `5089dd6`）|
 | `D:\Desktop\08-AI_Workspace\`（工作区仓库） | 分支 `main`；gitlink 指向应用仓库的某个提交 —— **本行不再写死编号**，用 `git ls-files -s 02-projects/dev/dsh_electron` 查 |
-| 测试 | 应用：`npm test` → **119/119**；会话工具箱：`node --test --test-isolation=none session-log-tools.test.mjs` → **14/14** |
-| DSH 服务 | 由 Electron 外壳管理，`127.0.0.1:3080`。运行中的是**开发版**外壳（v1.3.1 代码，启动于 10-03 12:09；1.3.2 只改了打包配置，对开发态运行时无影响，**不必为它重启**） |
+| 测试 | 应用：`npm test` → **126/126**；会话工具箱：`node --test --test-isolation=none session-log-tools.test.mjs` → **14/14** |
+| **DSH 版本** | **`0.2.0-rc.2`**（2026-10-16 由 `0.1.1-rc.2` 升级，**破坏性变更**：Web 服务加了令牌 + 会话 Cookie 两步认证）|
+| DSH 服务 | 由 Electron 外壳管理，`127.0.0.1:3080`。**外壳必须 ≥ v1.4.1 才能配 DSH 0.2**（v1.4.0 及更早会卡在"服务未就绪"）|
+| **插件层级** | 见本仓库 **[DSH-PLUGIN-LAYERS.md](./DSH-PLUGIN-LAYERS.md)** —— 想做层级/溯源相关开发，**先读它** |
 
 先跑一次 `git -C <仓库> log --oneline -20` 与 `npm test` 复核，再动任何东西。
+
+> **2026-10-16 交接（DSH 0.2 升级 + 外壳适配）**
+>
+> **发生了什么**：用户把 DSH 从 `0.1.1-rc.2` 升到 `0.2.0-rc.2`。升级后**网页正常，但 Electron 外壳起不来** ——
+> 报"服务未在 60s 内就绪"，而日志里服务其实已经起来了。
+>
+> **根因（两步都踩了）**：0.2 给本地 Web 服务加了**令牌 + 会话 Cookie 两步认证**：
+> ```
+> GET /                              -> 401
+> GET /?token=<secret>               -> 303 + Set-Cookie: dsh-auth-<rand>=v1.…
+> GET /（带 Cookie，不带 query）      -> 200 + text/html
+> GET /?token=<secret>（带 Cookie 且仍带 query）-> 303   ← 令牌一次性
+> ```
+> ① v1.4.0 只做了"取令牌并带上"，拿到的是 **303**，旧判据 `status < 500 && !isRedirect` 判 `weak` → 仍不就绪；
+> ② 补兑换时又踩了第二个坑：**重试必须去掉 query**，否则仍得 303。
+> 顺带解开一个费解现象：**视图能加载、健康检查却永远不就绪** —— Electron 的 `webContents`
+> 自带 Cookie 罐（跳转时自动保存并回带），而裸 `fetch` 没有。
+>
+> **修法**：`lib/service.js` 从服务 stdout 取令牌（`parseAuthenticatedUrl`，必须在日志脱敏之前取）；
+> `lib/health.js` 完成"令牌 → Cookie → 去掉 query 重试"的兑换，**仅同源**，跨源一律不跟随
+> （v1.3.1 审计的 fail-closed 边界不变，新增专门测试守住）。
+>
+> **测试**：119 → **126** 项，全过。新增 `tests/dummy-dsh-02.js`（完整复现上述四行行为）与
+> `tests/token-adapter.test.js`（5 项解析单测 + 2 项集成，含"拒绝跨源重定向"）。
+>
+> **能力边界（有意为之）**：令牌只在"本外壳拉起服务"的那次 stdout 里，所以**外部已运行的服务
+> 不能再被直接复用**。要交回外壳管理，先停掉外部服务再由外壳拉起。
+>
+> **新增文档**：**[DSH-PLUGIN-LAYERS.md](./DSH-PLUGIN-LAYERS.md)** —— 插件组合层级的实证说明
+> （空根 → base 94 行 → web-app 85 行 → 用户层 → home 层 → --patch）+ 开发注意事项。
+> 起因：官方的插件列表页**只按作用域分组，没有层级、没有空根、没有基础 agent 框架**，
+> 想做层级相关开发必须先有一份准确的层级事实。
+>
+> **遗留**：`release/dsh_electron/` 里**还没有 `1.4.1/` 分发产物**（这次只改了源码，没跑 `npm run dist`）。
+> 升级与回滚的完整步骤在 `D:\Desktop\09-DSH升级操作\升级操作.md`。
+
 
 > **2026-10-03 复核（新会话执行，逐条实测）**：上表除一行外全部属实 —— 两仓库 HEAD 与 gitlink 一致
 > （均为 `0fd1df1`）、`npm test` → **118/118**、会话工具箱 → **12/12**、两个仓库确实都没有 remote。
 > **修正一处已失效的记载**：原表"DSH 服务"行称"运行中的外壳是修复前的代码"，
-> 实测 `source/dsh_electron/load-status.log` 记有
+> 实测 `02-projects/dev/dsh_electron/load-status.log` 记有
 > `2026-10-03T04:09:39Z [INFO] DSH Electron 启动（v1.3.1，Electron 33.4.11，Node 20.18.3）`，
 > 且外壳进程启于 10-03 12:09（源码最后改动为 09-30 23:51）→ **当前外壳已是修复后的代码**；
 > 3080 的监听者（pid 3572）也已由外壳**接管**（`04:10:15 已接管服务 来源=commandline-match`），
@@ -35,30 +73,33 @@
 > **2026-10-03 再续（收尾）**：待办 6 也已修复并发布 —— **v1.3.2**（`build.extraMetadata.productName`，
 > 打包版 userData 改为 `%APPDATA%\DSH Desktop`，与开发版彻底分开）。验收工具 9 项全通过、
 > 无 `[WARN]`；并做了真实用户路径实测（免安装版、无参数、默认 userData、**开发版外壳同时运行**
-> 的情况下正常启动并复用 3080 的已有服务）。详见 `releases\dsh_electron\1.3.2\RELEASE.txt`。
+> 的情况下正常启动并复用 3080 的已有服务）。详见 `02-projects\release\dsh_electron\1.3.2\RELEASE.txt`。
 > 至此**第二节已无待办项**，只剩第 2 条（加远端，需用户提供远端地址）。
 
 ## 二、待办（按优先级）
 
 ### 1. ✅ 已完成（2026-10-03）打包版的端到端验证 —— 当初唯一没能验证的修复
 - **结果：通过。** 产物已构建（`dist\` 两个 exe，构建自提交 `0fd1df1` = 标签 `v1.3.1`），
-  并已按现有约定发布到 `releases\dsh_electron\1.3.1\`（含 `SHA256SUMS.txt` 与 `RELEASE.txt`）。
+  并已按现有约定发布到 `02-projects\release\dsh_electron\1.3.1\`（含 `SHA256SUMS.txt` 与 `RELEASE.txt`）。
 - **怎么验的（不需要人工双击）**：① 拿产物 asar 里的**真实字节**跑 `lib/config.js`
   —— 它不依赖 Electron，于是"日志会不会落进 asar"可以自动化验收：确认打包态日志路径落在
   userData、不指向 `app.asar`，并实测 `<asar>\load-status.log` 写入确实抛 `ENOENT`（旧缺陷实证）；
   ② 真启动 `dist\win-unpacked\DSH Desktop.exe`：日志确实产生在 userData 目录内、内容含
   "DSH Electron 启动（v1.3.1，Electron 33.4.11，Node 20.18.3）"。两次都只使用随机空闲端口上的
   假服务，**未接触 3080**。
-- **已固化成仓库工具**：`source\dsh_electron\tools\verify-packaged-logpath.js`
+- **已固化成仓库工具**：`02-projects\dev\dsh_electron\tools\verify-packaged-logpath.js`
   （`npm run dist` 后执行 `node tools\verify-packaged-logpath.js`，退出码 0 = 通过，共 8 项检查）。
   以后这类"打包态行为"不必再靠人工双击来验。
 - **仅剩一条需人工**：侧边栏"打开日志"按钮点击后是否真能打开文件（日志文件本身已确认存在、
   路径计算正确）。注意 `%APPDATA%\DSH Desktop` 这个目录**根本不会被创建** —— 原因见下面新增的第 6 条。
-- **注意**：`releases\dsh_electron\1.3.0\` 里的 exe 是**修复前**的产物，不要拿它做验证。
+- **注意**：`02-projects\release\dsh_electron\1.3.0\` 里的 exe 是**修复前**的产物，不要拿它做验证。
 
-### 2. 【需用户决定】两个仓库都没有 remote
-- 应用仓库 `source\dsh_electron` 与工作区仓库 `D:\Desktop\08-AI_Workspace\` **都没有远程**，全部历史只在本机。
-- 这是用户最初说"稍后再和其他更新一起考虑"的第 4 项。要加就先建私有远端再 `git remote add` + `push --all --tags`。
+### 2. ✅ 已完成（2026-10-15）两个仓库都已加远程并推送
+- ~~应用仓库 `02-projects/dev/dsh_electron` 与工作区仓库 `D:\Desktop\08-AI_Workspace\` **都没有远程**~~
+  → **现已配好 SSH 远端**：应用 `git@github.com:CRT353/dsh-electron.git`、工作区 `git@github.com:CRT353/ma_workspace.git`，
+  密钥 `~/.ssh/id_ed25519`。**无 `gh` CLI，也无 https 凭据助手 → remote 必须保持 SSH 形式。**
+- 推送顺序：**先子仓库、后根仓库**（根仓库用 gitlink 记录子仓库提交）。
+- `git push` 走 SSH 偶发 `Connection reset … port 22`（网络瞬断，非权限问题）→ 重试即可成功。
 
 ### 3. ✅ 已完成（2026-10-03）`session-log-repair.mjs` 大区间输出爆炸
 - **改法**：超过阈值即汇总 —— 记录列表 >8 条时打印"共 M 条记录，区间 #a–#b（文件第 x–y 行）；前 5 条: …"。
@@ -107,7 +148,7 @@
 - **验收**：`verify-packaged-logpath.js` 新增"产物是否带顶层 productName"检查；本版 9 项全通过、无 `[WARN]`。
   另做了真实用户路径实测（免安装版、无参数、默认 userData、**开发版外壳同时运行**）：
   1.3.1 在同样条件下会秒退，1.3.2 正常启动、日志落在 `%APPDATA%\DSH Desktop`、且复用了 3080 上的
-  已有服务、未影响正在运行的服务。详见 `releases\dsh_electron\1.3.2\RELEASE.txt` 第六节。
+  已有服务、未影响正在运行的服务。详见 `02-projects\release\dsh_electron\1.3.2\RELEASE.txt` 第六节。
 
 ## 三、低危未改项（已审议，只在代码里留了注释，不要"顺手"改掉）
 - `lib/security.js#isLocalHost` 接受 `*.localhost`（与 RFC 6761 / Chromium 一致；要利用需用户自己设 `DSH_URL`）。

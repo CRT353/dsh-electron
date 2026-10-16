@@ -384,6 +384,10 @@ npm start
          └─ 归属漂移检测：managed / reuse / foreign / orphan / takeover / stopped
 ```
 
+> 上面是**外壳自身**的架构。**DSH 那边的插件组合层级是另一回事** ——
+> 空根 → `dsh-base` 94 行 → `dsh-web-app` 85 行 → profile 用户层 → home 层 → `--patch`，
+> 见 [`DSH-PLUGIN-LAYERS.md`](./DSH-PLUGIN-LAYERS.md)。
+
 ## 十一、文件说明
 
 | 文件 | 作用 |
@@ -399,5 +403,6 @@ npm start
 | `tools/gen-icon.js` | 纯 Node 生成 `icon.png` 与 `build/icon.ico` |
 | `build/icon.ico` `build/icon.png` | 打包资源（由 `gen-icon` 生成） |
 | `CHANGELOG.md` | 逐版本变更记录（含每个坑的实测证据） |
+| `DSH-PLUGIN-LAYERS.md` | **DSH 插件组合层级的实证说明**（空根 → base 94 行 → web-app 85 行 → 用户层 → home 层 → `--patch`）+ 开发注意事项。**要做 DSH 插件相关开发先读它** |
 | `NEXT-STEPS.md` | 会话交接文档：未完成的待办与踩坑记录，**不是长期文档** |
 | `load-status.log` | 运行日志（自动轮转，凭据脱敏） |
