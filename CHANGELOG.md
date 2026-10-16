@@ -13,6 +13,38 @@ git tag --list --format='%(refname:short)  %(objectname:short)  %(subject)'
 
 ---
 
+## v1.4.1 —— 令牌 → Cookie 兑换修正（v1.4.0 的修复）
+
+- **问题**：v1.4.0 只做了"取到令牌并把带令牌的地址用于探测"，但**健康检查仍判不就绪**，
+  报 `http-303-redirect`。2026-10-16 在真实 DSH 0.2 上逐条实测后搞清了完整机制 ——
+  **认证是两步兑换，不是"带上令牌就行"**：
+
+  | 请求 | 响应 |
+  |---|---|
+  | `GET /`（无凭据） | 401（无 Content-Type、无正文） |
+  | `GET /?token=<secret>` | **303** + `Set-Cookie: dsh-auth-<rand>=v1.…`（`Location: ./`） |
+  | `GET /`（带 Cookie，**不带 query**） | **200** + `text/html` |
+  | `GET /?token=<secret>`（带 Cookie，**仍带 query**） | **303** ← 令牌**一次性** |
+
+  `Set-Cookie` 的值内含 `authority`（绑 主机:端口）与 `expiresAt`。
+  两个关键细节都是实测踩出来的：
+  1) **只带令牌不够** —— 303 在旧判据里是 `identity=weak`，仍不就绪；
+  2) **重试必须去掉 query** —— 带着 `?token=` 重试仍得 303（令牌一次性）。
+     第一版修复正是因为漏了这一步而无效。
+
+  这也解释了"视图能加载、健康检查却永远不就绪"这个费解现象：
+  Electron 的 `webContents` 自带 Cookie 罐（跳转时自动保存并回带），而裸 `fetch` 没有。
+
+- **修法**：`lib/health.js` 的 `probeDsh` 完成兑换 —— 仅当 3xx 的 `Location` **同源**
+  且下发 `dsh-auth-*` Cookie 时，才用该 Cookie **去掉 query** 重试一次原地址。
+  **跨源一律不跟随**：v1.3.1 审计确立的 fail-closed 边界不变，并新增专门测试守住它。
+
+- **测试**：`tests/dummy-dsh-02.js` 升级为**完整复现**上述四行行为（含"带 cookie 但
+  仍带 token 应回 303"这一条）；`tests/token-adapter.test.js` 增到 7 项，其中新增
+  "拒绝跨源重定向"一项（起一个 303 到别的 origin 的陌生服务，断言不得被判为身份确认）。
+  应用测试 125 → **126 项，全过**。
+
+---
 ## v1.4.0 —— DSH 0.2 令牌适配
 
 - **问题**：DSH 0.2 起本地 Web 服务加了**进程级令牌门禁**：密钥在启动时随机生成

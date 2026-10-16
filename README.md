@@ -17,11 +17,12 @@
 > 工作区里的**目录名**统一用 `dsh_electron`（源码目录与归档目录同名），
 > 这条命名规则见工作区根 README 第七节。
 
-当前版本 **v1.4.0**。
+当前版本 **v1.4.1**。
 
 | 版本 | 主题 | 一句话 |
 |---|---|---|
-| `v1.4.0` | **DSH 0.2 令牌适配** | 本地 Web 服务加了进程级令牌，外壳从服务 stdout 取到它并用于健康检查与视图加载 |
+| `v1.4.1` | **令牌→Cookie 兑换修正** | 令牌是一次性的、先换 dsh-auth Cookie 才能访问；补上兑换后健康检查才真正就绪 |
+| `v1.4.0` | DSH 0.2 令牌适配（首版） | 外壳从服务 stdout 取到令牌并用于健康检查与视图加载 |
 | `v1.3.2` | 打包版身份修复 | 打包版与开发版的 userData 分开，两版可同时运行 |
 | `v1.3.1` | 审计修复版 | 一次完整审计后的四组修复（误杀面、失败侧归属、"不知道"、日志与凭据） |
 | `v1.3.0` | 打包与隔离 | 视图独立会话分区、安全停止工具 `npm stop`、旧脚本退役 |
@@ -36,24 +37,43 @@
 
 ## 〇、DSH 0.2 起：本地服务需要"进程级令牌"（**必读**）
 
-从 DSH 0.2 开始，本地 Web 服务给**整个界面**加了一道令牌门禁：
+从 DSH 0.2 开始，本地 Web 服务给**整个界面**加了一道"令牌 + 会话 Cookie"的认证。
+**这不是"带上令牌就行"，而是两步兑换**（下表是 2026-10-16 在真实 0.2 上逐条实测的结果）：
+
+| 请求 | 响应 |
+|---|---|
+| `GET /`（无凭据） | **401** —— 无 Content-Type、无正文 |
+| `GET /?token=<secret>` | **303** + `Set-Cookie: dsh-auth-<rand>=v1.…`（`Location: ./`） |
+| `GET /`（带该 Cookie，**不带 query**） | **200** + `text/html` ✅ |
+| `GET /?token=<secret>`（带 Cookie，**仍带 query**） | **303** ← 令牌是**一次性**的 |
 
 | 事实 | 说明 |
 |---|---|
 | 令牌怎么来 | `dsh web` 启动时随机生成（32 字节），**不落盘、无法由外部指定** |
 | 令牌在哪 | 只印在**服务进程的 stdout** 一行上：`dsh web: http://127.0.0.1:3080/?token=<secret>` |
-| 不带令牌会怎样 | 访问 `/`、`/index.html`、`/api` 全部返回 **401**（且无 Content-Type、无正文） |
+| Cookie 从哪来 | 用令牌请求一次就下发；`Set-Cookie` 含 `authority`（绑主机:端口）与 `expiresAt` |
+| 不带凭据会怎样 | `/`、`/index.html`、`/api` 全部 **401** |
 
-**这对本外壳有两处硬影响**，v1.4.0 都已处理：
+**这对本外壳有两处硬影响**，v1.4.1 都已处理：
 
 1. **健康检查**：旧实现发裸 GET，拿到 401 后 `status < 500` 为假 ⇒ 永远判"未就绪"，
    60 秒后报"服务未在 60s 内就绪"，而服务其实活得好好的。
+   即便只带上令牌也不够 —— 拿到的是 303，仍判 `identity=weak`。
 2. **视图加载**：裸地址加载会让窗口内出现一片 401，看不到界面。
 
-**做法**：外壳本来就是拉起服务的一方，也本来就在读它的 stdout，于是
-`lib/service.js` 在那里顺手解析出带令牌的地址（`parseAuthenticatedUrl`），
-存进 `state.authenticatedUrl`，再由 `currentUrl()` 提供给健康检查与视图加载。
-**日志里始终只写脱敏后的地址**（`safeUrl`），令牌不会落进 `dsh-svc` 日志。
+**做法（两处配合）**：
+
+- `lib/service.js`：外壳本来就是拉起服务的一方，也本来就在读它的 stdout，于是在那里
+  解析出带令牌的地址（`parseAuthenticatedUrl`），存进 `state.authenticatedUrl`，
+  再由 `currentUrl()` 供健康检查与视图加载取用。
+- `lib/health.js`：探测时完成**令牌 → Cookie 兑换**。仅当 3xx 的 `Location` **同源**
+  且下发的是 `dsh-auth-*` Cookie 时，才用该 Cookie **去掉 query** 重试一次。
+  **跨源一律不跟随** —— v1.3.1 审计确立的 fail-closed 不变（并有专门测试守住）。
+
+**日志里始终只写脱敏后的地址**（`safeUrl` 会连同 query 一起抹掉），令牌不落进 `dsh-svc` 日志。
+
+> 这也解释了那个容易误判的现象：**视图能加载、健康检查却永远不就绪** ——
+> Electron 的 `webContents` 自带 Cookie 罐（跳转时自动保存并回带），而裸 `fetch` 没有。
 
 ### ⚠️ 一个能力边界（有意为之，不是缺陷）
 
@@ -61,12 +81,13 @@
 
 | 场景 | 能否访问 |
 |---|---|
-| **本外壳自己拉起的服务** | ✅ 取到令牌，健康检查与视图都正常 |
-| **别人（外部终端）先启动的服务** | ❌ 拿不到令牌 → 健康检查 401 → 会尝试自行拉起 |
+| **本外壳自己拉起的服务** | ✅ 取到令牌 → 兑换 Cookie → 健康检查与视图都正常 |
+| **别人（外部终端）先启动的服务** | ❌ 拿不到令牌 → 401 → 会尝试自行拉起 |
 
 因此从 v1.4.0 起，**"外部已运行的服务"不再能被本外壳直接复用** ——
-这是 DSH 0.2 令牌模型带来的固有结果，不是本外壳可以选择的行为。
+这是 DSH 0.2 认证模型带来的固有结果，不是本外壳可以选择的行为。
 要交回外壳管理，请**先停掉外部服务**，再由外壳启动（它会自己拉起并接管）。
+
 
 ---
 
@@ -140,7 +161,7 @@
 ```powershell
 npm install                    # 首次
 npm start                      # 启动独立窗口
-npm test                       # 125 个自动化用例
+npm test                       # 126 个自动化用例
 npm run selftest               # 真实环境自检（建议在普通终端运行）
 node tools\selftest.js --inspect 3080   # 只读：看 3080 被谁监听（不终止任何进程）
 npm stop                       # 安全停止 DSH 服务（带身份校验，不会误杀其它 node 进程）
@@ -198,7 +219,7 @@ npm run dist                   # 打包安装包（需 electron-builder）
 ## 七、测试与自检
 
 ```powershell
-npm test                        # 125 项：单测 + 集成测试 + 装配层 + 渲染层 + 桥接契约 + 自检退出码
+npm test                        # 126 项：单测 + 集成测试 + 装配层 + 渲染层 + 桥接契约 + 自检退出码
 npm run selftest                # 真实 netstat/ps → 认领 → taskkill/kill → 端口释放 全链路
 node tools\selftest.js --inspect 3080   # 只读：看 3080 被谁监听（不终止任何进程）
 ```
@@ -372,7 +393,7 @@ npm start
 | `renderer/index.html` `sidebar.css` `sidebar.js` | 侧边栏 UI（严格 CSP，全部 `textContent` 渲染，告警/详情文本可选中复制） |
 | `renderer/view-placeholder.html` | 服务未就绪时的占位页 |
 | `lib/*.js` | 可单测的业务逻辑（含 `context-menu.js` 右键菜单模板，见上） |
-| `tests/*.test.js` | 125 个自动化用例；`tests/dummy-server.js` 为假 DSH 服务 |
+| `tests/*.test.js` | 126 个自动化用例；`tests/dummy-server.js` 为假 DSH 服务 |
 | `tools/selftest.js` | 真实环境全链路自检 / 只读端口检查 |
 | `tools/stop-dsh.js` | 安全停止工具（`npm stop`）：带身份校验，不会误杀其它 node 进程 |
 | `tools/gen-icon.js` | 纯 Node 生成 `icon.png` 与 `build/icon.ico` |

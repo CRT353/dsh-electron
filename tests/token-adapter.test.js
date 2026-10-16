@@ -127,15 +127,42 @@ test('集成：外壳从 stdout 取到令牌后，健康检查从 401 转为身�
   assert.ok(sm.state.authenticatedUrl, 'state.authenticatedUrl 应已写入');
 
   // ② 用带令牌的地址探测，应得到"身份确认"
-  const authedProbe = await probeDsh({ url: authed, timeoutMs: 3000, requireHtml: true });
-  assert.strictEqual(authedProbe.status, 200, `带令牌应 200，实际 ${authedProbe.status}`);
+  //    注意：令牌是**一次性**的 —— 服务先回 303 + Set-Cookie，probeDsh 内部完成
+  //    "令牌 → 会话 Cookie → **去掉 query** 重试"的兑换，最终才拿到 200。
+  const authedProbe = await probeDsh({ url: authed, timeoutMs: 5000, requireHtml: true });
+  assert.strictEqual(authedProbe.status, 200, `带令牌兑换后应 200，实际 ${authedProbe.status}（reason=${authedProbe.reason}）`);
   assert.strictEqual(authedProbe.ok, true, '带令牌应通过身份确认（ok=true）');
   assert.strictEqual(authedProbe.identity, 'strong', '带令牌应判为 strong（200 + text/html）');
+  assert.match(String(authedProbe.contentType), /text\/html/i, 'Content-Type 应为 text/html');
 
-  // ③ 对照：服务已在运行时，裸地址仍是 401 —— 证明"修复来自令牌，而不是服务恰好放开了"
+  // ③ 对照：服务已在运行时，裸地址仍是 401 —— 证明"修复来自令牌兑换，而不是服务恰好放开了"
   // 注意必须先启动服务再探测：服务没起来时拿到的是"连接被拒"，而非 401。
   const bareAfter = await probeDsh({ url: baseUrl, timeoutMs: 3000, requireHtml: true });
   assert.strictEqual(bareAfter.status, 401, `裸地址应 401，实际 ${bareAfter.status}（reason=${bareAfter.reason}）`);
   assert.strictEqual(bareAfter.reachable, true, '401 说明服务器回了话 → reachable 必须为 true');
   assert.strictEqual(bareAfter.ok, false, '裸地址不应通过身份确认');
+});
+
+test('集成：拒绝跨源重定向（fail-closed）—— 3xx 指向别处时绝不跟随', async () => {
+  // 起一个"陌生"服务：收到请求就 303 到另一个 origin，并顺手塞一个 dsh-auth Cookie。
+  // v1.3.1 审计的结论必须仍然成立：不得跟随跨源重定向，否则探测会被引向任意主机；
+  // 也不能因为有 Set-Cookie 就放宽 —— 只有"同源 3xx + dsh-auth Cookie"才允许重试。
+  const http = require('http');
+  const evil = http.createServer((req, res) => {
+    res.writeHead(303, {
+      Location: 'http://127.0.0.1:1/',
+      'Set-Cookie': 'dsh-auth-evil=x; Path=/'
+    });
+    res.end();
+  });
+  const port = await new Promise((resolve) => evil.listen(0, '127.0.0.1', () => resolve(evil.address().port)));
+  try {
+    const r = await probeDsh({ url: `http://127.0.0.1:${port}/`, timeoutMs: 3000, requireHtml: true });
+    assert.strictEqual(r.ok, false, '跨源重定向不得被判为身份确认');
+    assert.strictEqual(r.redirect, true, '应如实标记这是一个未跟随的重定向');
+    assert.strictEqual(r.status, 303, '应报告原始 303，而不是跟随后的结果');
+    assert.strictEqual(r.reachable, true, '服务器确实回了话 → reachable 为 true');
+  } finally {
+    evil.close();
+  }
 });
