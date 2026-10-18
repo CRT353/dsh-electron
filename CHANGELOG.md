@@ -13,6 +13,34 @@ git tag --list --format='%(refname:short)  %(objectname:short)  %(subject)'
 
 ---
 
+## v1.4.2 —— 沙箱兜底开关（本机 Chromium 沙箱初始化失败）
+
+- **问题**：2026-10-18 起，本机上双击 `03-shortcuts\DSH.lnk` **完全打不开**：
+  正常双击是"没有窗口、直接没反应"，管理员身份运行则是"空白窗口几秒后自己关闭"。
+  实测证据（同日、同一台机、同一份代码）：
+  - `load-status.log` 停在 `已启动服务进程 pid=...`，**没有** `开始退出清理` ⇒ 进程被瞬间掐掉；
+  - 同一次运行里窗口侧有 `DSH 视图进程异常退出: launch-failed`；
+  - Windows 事件日志：`electron.exe` `0xc0000005`，**故障模块是 electron.exe 自身**；
+    控制台另有 `GPU process launch failed: error_code=18`、`Network service crashed, restarting service`；
+  - 对照实验（最小 Electron 冒烟程序，与 DSH 代码无关）：
+    `electron.exe --version` **加沙箱就秒崩，退出码 `0x80000003`，stdout/stderr 一个字都没有**；
+    加 `--no-sandbox` 则窗口、渲染进程、`executeJavaScript` 全部正常（1126ms 完成）；
+  - 结论：**不是 DSH 代码的 bug，也不是快捷方式指向失效** —— 本机 Chromium 沙箱起不来。
+    而 `bootstrap()` 里的 `app.enableSandbox()` 是无条件的，于是必崩。
+- **做法**：
+  - `lib/config.js` 新增 `wantsSandboxDisabled(argv, commandLine)`：认 `--no-sandbox`
+    与 `--disable-sandbox`（argv 与 `app.commandLine.hasSwitch()` 两条路都看；
+    取不到命令行时按"开沙箱"处理，**绝不因为异常反过来关掉沙箱**）；
+  - `bootstrap()` 改为"默认强制沙箱，显式传开关才跳过 `app.enableSandbox()`"，
+    跳过时打一条 WARN（`启动参数含 --no-sandbox：本次不强制 Chromium 沙箱…`），保证降级永远留痕；
+  - `package.json` 新增 `start:no-sandbox` 脚本，版本号 1.4.2。
+- **影响**：默认行为完全不变（不传开关 ⇒ 照旧 `app.enableSandbox()`，`webPreferences.sandbox` 仍为 true）。
+  只有显式 `--no-sandbox` 才放弃渲染进程沙箱；此时 `contextIsolation` / `nodeIntegration:false` /
+  导航白名单等防线仍在。本机 `DSH.lnk` 已带上该参数（见工作区 `03-shortcuts/README.md`）。
+- **未做**：没有重新打包（`dist/` 与 release 归档仍是 v1.4.1 产物），本次只改源码与文档。
+
+---
+
 ## v1.4.1 —— 令牌 → Cookie 兑换修正（v1.4.0 的修复）
 
 - **问题**：v1.4.0 只做了"取到令牌并把带令牌的地址用于探测"，但**健康检查仍判不就绪**，

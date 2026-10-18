@@ -4,7 +4,7 @@ const test = require('node:test');
 const assert = require('node:assert');
 const path = require('path');
 
-const { loadConfig } = require('../lib/config');
+const { loadConfig, wantsSandboxDisabled } = require('../lib/config');
 
 test('默认配置：本机 3080 + dsh web --no-open，无致命错误', () => {
   const config = loadConfig({}, { root: 'C:\\app' });
@@ -127,4 +127,19 @@ test('视图会话默认独立隔离，可用环境变量退回默认会话', ()
   assert.strictEqual(loadConfig({ DSH_VIEW_PARTITION: 'none' }).viewPartition, '');
   assert.strictEqual(loadConfig({ DSH_VIEW_PARTITION: '  ' }).viewPartition, '');
   assert.strictEqual(loadConfig({ DSH_VIEW_PARTITION: 'persist:custom' }).viewPartition, 'persist:custom');
+});
+
+test('沙箱开关：只有显式传 --no-sandbox / --disable-sandbox 才降级（默认强制沙箱）', () => {
+  const offNoop = { hasSwitch: () => false };
+  assert.strictEqual(wantsSandboxDisabled([], null), false, '默认必须强制沙箱');
+  assert.strictEqual(wantsSandboxDisabled(['electron', '.'], offNoop), false);
+  assert.strictEqual(wantsSandboxDisabled(['electron', '.', '--no-sandbox'], null), true);
+  assert.strictEqual(wantsSandboxDisabled(['electron', '--disable-sandbox'], offNoop), true);
+  // Chromium 解析过的开关未必出现在 argv 里，两者都要认
+  assert.strictEqual(wantsSandboxDisabled(['electron', '.'], { hasSwitch: (n) => n === 'no-sandbox' }), true);
+  assert.strictEqual(
+    wantsSandboxDisabled([], { hasSwitch: () => { throw new Error('boom'); } }),
+    false,
+    '取不到命令行时按默认（开沙箱）处理，不能反过来把沙箱关掉'
+  );
 });

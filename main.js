@@ -28,7 +28,7 @@ const { probeDsh, probeInternet, FlapGuard, detectTransitions } = require('./lib
 const { decideNavigation, decideOpenExternal, decidePermission, describePolicy } = require('./lib/security');
 const { buildContextMenu } = require('./lib/context-menu');
 const { ServiceManager } = require('./lib/service');
-const { loadConfig } = require('./lib/config');
+const { loadConfig, wantsSandboxDisabled } = require('./lib/config');
 
 // 打包态 `__dirname` 落在 `resources\app.asar` 内（asar 归档不可写），因此把可写的
 // 用户数据目录一并交给配置层：默认日志路径会落到那里，而不是写不进去的 asar 里。
@@ -679,7 +679,15 @@ function startShutdown(reason) {
 
 // ---------- 生命周期 ----------
 function bootstrap() {
-  app.enableSandbox(); // 强制所有渲染进程运行在沙箱中
+  // 默认强制沙箱；只有显式传 --no-sandbox / --disable-sandbox 才降级。
+  // 背景：部分机器上 Chromium 沙箱初始化会直接失败（浏览器进程 0xc0000005、渲染进程
+  // launch-failed、GPU/网络子进程 error_code=18，且不写日志），此时只能以 --no-sandbox
+  // 启动。降级不静默：一定会留一条 WARN，见 README「启动即闪退 / 空白窗口」。
+  if (wantsSandboxDisabled(process.argv, app.commandLine)) {
+    logger.warn('启动参数含 --no-sandbox：本次不强制 Chromium 沙箱（渲染进程失去沙箱隔离，仅用于本机沙箱不可用时的兜底）');
+  } else {
+    app.enableSandbox(); // 强制所有渲染进程运行在沙箱中
+  }
 
   if (config.fatalError) {
     logger.error(`配置校验失败：${config.fatalError}`);

@@ -17,10 +17,11 @@
 > 工作区里的**目录名**统一用 `dsh_electron`（源码目录与归档目录同名），
 > 这条命名规则见工作区根 README 第七节。
 
-当前版本 **v1.4.1**。
+当前版本 **v1.4.2**。
 
 | 版本 | 主题 | 一句话 |
 |---|---|---|
+| `v1.4.2` | **沙箱兜底开关** | 本机 Chromium 沙箱初始化失败时可用 `--no-sandbox` 启动（默认仍强制沙箱，降级会留 WARN） |
 | `v1.4.1` | **令牌→Cookie 兑换修正** | 令牌是一次性的、先换 dsh-auth Cookie 才能访问；补上兑换后健康检查才真正就绪 |
 | `v1.4.0` | DSH 0.2 令牌适配（首版） | 外壳从服务 stdout 取到令牌并用于健康检查与视图加载 |
 | `v1.3.2` | 打包版身份修复 | 打包版与开发版的 userData 分开，两版可同时运行 |
@@ -161,6 +162,7 @@
 ```powershell
 npm install                    # 首次
 npm start                      # 启动独立窗口
+npm run start:no-sandbox       # 同上，但不强制 Chromium 沙箱（本机沙箱不可用时的兜底）
 npm test                       # 126 个自动化用例
 npm run selftest               # 真实环境自检（建议在普通终端运行）
 node tools\selftest.js --inspect 3080   # 只读：看 3080 被谁监听（不终止任何进程）
@@ -174,6 +176,11 @@ npm run dist                   # 打包安装包（需 electron-builder）
 （直接指向本项目的 `node_modules\electron\dist\electron.exe`，无控制台窗口）；
 同目录还有 `停止 DSH 服务.lnk`（等价于 `npm stop`）。
 若移动了项目目录，请重建这两个快捷方式。直接用命令行时不需要它们：`npm start` 即可。
+
+> **本机注意**：这台机器上 Chromium 沙箱初始化会失败（现象与判据见第九节「故障排查」最后一行），
+> 因此 `DSH.lnk` 的启动参数带 `--no-sandbox`、等价命令是 `npm run start:no-sandbox`。
+> 沙箱能恢复（例如把 electron.exe 加入安全软件信任区）之后，把参数撤掉即可回到 `npm start`。
+> 降级不是静默的：`load-status.log` 里一定会有 `启动参数含 --no-sandbox` 那条 WARN。
 
 本项目在工作区中属于源代码区 `02-projects\dev\dsh_electron\`
 （各版本分发单独归档在 `02-projects\release\dsh_electron\<版本>\`，均不在本仓库内）。
@@ -333,6 +340,7 @@ npm run dist
 | 启动报"DSH_URL 指向非本机地址" | 安全默认值。确需远端请设 `DSH_ALLOW_REMOTE=1` |
 | 右侧一直停在占位页，但端口明明有响应 | 默认要求响应为 `text/html` 才认作 DSH（防止把陌生服务当 DSH 加载进外壳）。若你的入口返回其它类型，设 `DSH_HEALTH_REQUIRE_HTML=0` |
 | **双击打包版没反应**（无窗口、无日志、进程秒退） | 只发生在 ≤1.3.1：打包版与开发版共用 `%APPDATA%\dsh-electron`，先启动的那个持有单实例锁。升级到 v1.3.2（userData 已隔离）或先退掉另一个；临时绕过可加 `--user-data-dir=<另一个目录>`（见第八节末） |
+| **双击即闪退 / 空白窗口几秒后自退**，日志里只有 `DSH 视图进程异常退出: launch-failed`，Windows 事件日志里是 `electron.exe 0xc0000005`（故障模块 electron.exe 自身），控制台另有 `GPU process launch failed: error_code=18`、`Network service crashed` | **本机 Chromium 沙箱初始化失败**，不是本项目的 bug。判据（命令行可复现）：`electron.exe --version` 加沙箱就秒崩、退出码 `0x80000003`、**一个字都不输出**；同一台机 `--no-sandbox` 完全正常。处理：用 `npm run start:no-sandbox`（或给 electron.exe 加 `--no-sandbox`）启动；v1.4.2 起这会**跳过 `app.enableSandbox()`** 并留一条 WARN。根因多半在本机常驻安全软件（火绒 / 联想电脑管家 / Defender）对未签名进程的拦截，可试把 `node_modules\electron\dist\electron.exe` 加进其信任区后**再撤掉** `--no-sandbox` |
 
 ### 从旧版（v1.0.0 / v1.1.0）切换到当前版本（重要）
 
