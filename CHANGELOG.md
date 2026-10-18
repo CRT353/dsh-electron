@@ -42,7 +42,7 @@ git tag --list --format='%(refname:short)  %(objectname:short)  %(subject)'
   继续排查发现第二个机器级故障 —— Chromium 在默认 profile `%APPDATA%\dsh-electron` 里
   **建不出单实例锁**（`process_singleton_win.cc(465) Lock file can not be created! Error code: 5`），
   于是 `requestSingleInstanceLock()` 返 false、程序**在写日志之前**就 `app.quit()`，
-  表现为"无窗口 + 无日志 + 无崩溃记录"。同一目录 `cmd` 能写、只有 `electron.exe` 被拒（非 ACL 问题），
+  表现为"无窗口 + 无日志 + 无崩溃记录"。Chromium 130 建的是 `<userData>\lockfile`；`Error code: 5` 的确切来源**至今未定**（同参数在别的进程/目录里都能成功，火绒安全日志里也无记录），
   所以本机快捷方式又加了 `--user-data-dir`。完整证据与"为什么昨天还好今天坏"的时间线见工作区
   `04-exp/2026-10-18-electron-shell-wont-open/README.md`。
 

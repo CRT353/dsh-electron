@@ -345,7 +345,7 @@ npm run dist
 | 启动报"DSH_URL 指向非本机地址" | 安全默认值。确需远端请设 `DSH_ALLOW_REMOTE=1` |
 | 右侧一直停在占位页，但端口明明有响应 | 默认要求响应为 `text/html` 才认作 DSH（防止把陌生服务当 DSH 加载进外壳）。若你的入口返回其它类型，设 `DSH_HEALTH_REQUIRE_HTML=0` |
 | **双击打包版没反应**（无窗口、无日志、进程秒退） | 只发生在 ≤1.3.1：打包版与开发版共用 `%APPDATA%\dsh-electron`，先启动的那个持有单实例锁。升级到 v1.3.2（userData 已隔离）或先退掉另一个；临时绕过可加 `--user-data-dir=<另一个目录>`（见第八节末） |
-| **双击完全没反应**：无窗口、`load-status.log` **一条都不写**、Windows 事件日志里也没有崩溃记录 | 单实例锁文件建不出来。Chromium 会在 profile 目录建 `SingletonLock`，失败时报 `Lock file can not be created! Error code: 5`，于是 `requestSingleInstanceLock()` 返 false、程序在写日志前就退出。**不是 ACL 问题**（同目录 `cmd` 能写，只有 `electron.exe` 被拒）→ 换 profile：`--user-data-dir=<可写目录>`。用 `--enable-logging --log-file=…` 可直接看到那行 `Error code: 5` |
+| **双击完全没反应**：无窗口、`load-status.log` **一条都不写**、Windows 事件日志里也没有崩溃记录 | 单实例锁建不出来。Chromium 130 在 profile 目录建 `<userData>\lockfile`（`GENERIC_WRITE` + `FILE_FLAG_DELETE_ON_CLOSE`），失败即 `Lock file can not be created! Error code: 5` → `requestSingleInstanceLock()` 返 false → 程序在写日志前就退出。**根因未定**（同参数换进程/换目录都正常）→ 先用 `--user-data-dir=<可写目录>` 绕过；要定论用 `--enable-logging --log-file=…` 抓那行错误，并查 `%APPDATA%\<userData>\lockfile` 的属性/ACL |
 | **双击即闪退 / 空白窗口几秒后自退**，日志里只有 `DSH 视图进程异常退出: launch-failed`，事件日志里是 `electron.exe 0xc0000005`（故障模块 electron.exe 自身），另有 `GPU process launch failed: error_code=18`、`Network service crashed` | **本机 Chromium 沙箱初始化失败**，不是本项目的 bug。判据：`electron.exe --version` 加沙箱就秒崩（退出码 `0x80000003`、一个字不输出），`--no-sandbox` 正常。处理：`npm run start:no-sandbox`；v1.4.2 起会**跳过 `app.enableSandbox()`** 并留 WARN。根因多半是本机常驻安全软件（火绒 / 联想电脑管家 / Defender）拦未签名进程，可加信任区后**再撤掉**该参数。两处根因的完整证据见工作区 `04-exp/2026-10-18-electron-shell-wont-open/README.md` |
 
 ### 从旧版（v1.0.0 / v1.1.0）切换到当前版本（重要）
