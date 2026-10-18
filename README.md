@@ -177,10 +177,15 @@ npm run dist                   # 打包安装包（需 electron-builder）
 同目录还有 `停止 DSH 服务.lnk`（等价于 `npm stop`）。
 若移动了项目目录，请重建这两个快捷方式。直接用命令行时不需要它们：`npm start` 即可。
 
-> **本机注意**：这台机器上 Chromium 沙箱初始化会失败（现象与判据见第九节「故障排查」最后一行），
-> 因此 `DSH.lnk` 的启动参数带 `--no-sandbox`、等价命令是 `npm run start:no-sandbox`。
-> 沙箱能恢复（例如把 electron.exe 加入安全软件信任区）之后，把参数撤掉即可回到 `npm start`。
-> 降级不是静默的：`load-status.log` 里一定会有 `启动参数含 --no-sandbox` 那条 WARN。
+> **本机注意（2026-10-18 起）**：这台机器同时踩了两个机器级故障 ——
+> ① Chromium 沙箱起不来（一开沙箱就秒崩，`--no-sandbox` 正常）；
+> ② 默认 profile `%APPDATA%\dsh-electron` 里**建不出单实例锁**
+> （`Lock file can not be created! Error code: 5` → `requestSingleInstanceLock()` 返回 false
+> → 程序在写日志之前就退出，表现为"无窗口无日志"）。
+> 因此本机 `DSH.lnk` 的参数是 `. --no-sandbox --user-data-dir="…\01-scratch\dsh-userdata"`。
+> 判据、时间线、"怎么恢复沙箱与默认 profile"见工作区
+> `04-exp/2026-10-18-electron-shell-wont-open/README.md`。
+> 降级不静默：`load-status.log` 里一定有 `启动参数含 --no-sandbox` 那条 WARN。
 
 本项目在工作区中属于源代码区 `02-projects\dev\dsh_electron\`
 （各版本分发单独归档在 `02-projects\release\dsh_electron\<版本>\`，均不在本仓库内）。
@@ -340,7 +345,8 @@ npm run dist
 | 启动报"DSH_URL 指向非本机地址" | 安全默认值。确需远端请设 `DSH_ALLOW_REMOTE=1` |
 | 右侧一直停在占位页，但端口明明有响应 | 默认要求响应为 `text/html` 才认作 DSH（防止把陌生服务当 DSH 加载进外壳）。若你的入口返回其它类型，设 `DSH_HEALTH_REQUIRE_HTML=0` |
 | **双击打包版没反应**（无窗口、无日志、进程秒退） | 只发生在 ≤1.3.1：打包版与开发版共用 `%APPDATA%\dsh-electron`，先启动的那个持有单实例锁。升级到 v1.3.2（userData 已隔离）或先退掉另一个；临时绕过可加 `--user-data-dir=<另一个目录>`（见第八节末） |
-| **双击即闪退 / 空白窗口几秒后自退**，日志里只有 `DSH 视图进程异常退出: launch-failed`，Windows 事件日志里是 `electron.exe 0xc0000005`（故障模块 electron.exe 自身），控制台另有 `GPU process launch failed: error_code=18`、`Network service crashed` | **本机 Chromium 沙箱初始化失败**，不是本项目的 bug。判据（命令行可复现）：`electron.exe --version` 加沙箱就秒崩、退出码 `0x80000003`、**一个字都不输出**；同一台机 `--no-sandbox` 完全正常。处理：用 `npm run start:no-sandbox`（或给 electron.exe 加 `--no-sandbox`）启动；v1.4.2 起这会**跳过 `app.enableSandbox()`** 并留一条 WARN。根因多半在本机常驻安全软件（火绒 / 联想电脑管家 / Defender）对未签名进程的拦截，可试把 `node_modules\electron\dist\electron.exe` 加进其信任区后**再撤掉** `--no-sandbox` |
+| **双击完全没反应**：无窗口、`load-status.log` **一条都不写**、Windows 事件日志里也没有崩溃记录 | 单实例锁文件建不出来。Chromium 会在 profile 目录建 `SingletonLock`，失败时报 `Lock file can not be created! Error code: 5`，于是 `requestSingleInstanceLock()` 返 false、程序在写日志前就退出。**不是 ACL 问题**（同目录 `cmd` 能写，只有 `electron.exe` 被拒）→ 换 profile：`--user-data-dir=<可写目录>`。用 `--enable-logging --log-file=…` 可直接看到那行 `Error code: 5` |
+| **双击即闪退 / 空白窗口几秒后自退**，日志里只有 `DSH 视图进程异常退出: launch-failed`，事件日志里是 `electron.exe 0xc0000005`（故障模块 electron.exe 自身），另有 `GPU process launch failed: error_code=18`、`Network service crashed` | **本机 Chromium 沙箱初始化失败**，不是本项目的 bug。判据：`electron.exe --version` 加沙箱就秒崩（退出码 `0x80000003`、一个字不输出），`--no-sandbox` 正常。处理：`npm run start:no-sandbox`；v1.4.2 起会**跳过 `app.enableSandbox()`** 并留 WARN。根因多半是本机常驻安全软件（火绒 / 联想电脑管家 / Defender）拦未签名进程，可加信任区后**再撤掉**该参数。两处根因的完整证据见工作区 `04-exp/2026-10-18-electron-shell-wont-open/README.md` |
 
 ### 从旧版（v1.0.0 / v1.1.0）切换到当前版本（重要）
 

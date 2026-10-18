@@ -38,6 +38,13 @@ git tag --list --format='%(refname:short)  %(objectname:short)  %(subject)'
   只有显式 `--no-sandbox` 才放弃渲染进程沙箱；此时 `contextIsolation` / `nodeIntegration:false` /
   导航白名单等防线仍在。本机 `DSH.lnk` 已带上该参数（见工作区 `03-shortcuts/README.md`）。
 - **未做**：没有重新打包（`dist/` 与 release 归档仍是 v1.4.1 产物），本次只改源码与文档。
+- **补充（同日晚些时候，仅文档/配置，未再改代码）**：`--no-sandbox` 只解决了其中一个根因。
+  继续排查发现第二个机器级故障 —— Chromium 在默认 profile `%APPDATA%\dsh-electron` 里
+  **建不出单实例锁**（`process_singleton_win.cc(465) Lock file can not be created! Error code: 5`），
+  于是 `requestSingleInstanceLock()` 返 false、程序**在写日志之前**就 `app.quit()`，
+  表现为"无窗口 + 无日志 + 无崩溃记录"。同一目录 `cmd` 能写、只有 `electron.exe` 被拒（非 ACL 问题），
+  所以本机快捷方式又加了 `--user-data-dir`。完整证据与"为什么昨天还好今天坏"的时间线见工作区
+  `04-exp/2026-10-18-electron-shell-wont-open/README.md`。
 
 ---
 
