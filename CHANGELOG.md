@@ -38,14 +38,18 @@ git tag --list --format='%(refname:short)  %(objectname:short)  %(subject)'
   只有显式 `--no-sandbox` 才放弃渲染进程沙箱；此时 `contextIsolation` / `nodeIntegration:false` /
   导航白名单等防线仍在。本机 `DSH.lnk` 已带上该参数（见工作区 `03-shortcuts/README.md`）。
 - **未做**：没有重新打包（`dist/` 与 release 归档仍是 v1.4.1 产物），本次只改源码与文档。
-- **补充（同日晚些时候，仅文档/配置，未再改代码）**：`--no-sandbox` 只解决了其中一个根因。
-  继续排查发现第二个机器级故障 —— Chromium 在默认 profile `%APPDATA%\dsh-electron` 里
-  **建不出单实例锁**（`process_singleton_win.cc(465) Lock file can not be created! Error code: 5`），
-  于是 `requestSingleInstanceLock()` 返 false、程序**在写日志之前**就 `app.quit()`，
-  表现为"无窗口 + 无日志 + 无崩溃记录"。Chromium 130 建的是 `<userData>\lockfile`；`Error code: 5` 的确切来源**至今未定**（同参数在别的进程/目录里都能成功，火绒安全日志里也无记录），
-  所以本机快捷方式又加了 `--user-data-dir`。完整证据与"为什么昨天还好今天坏"的时间线见工作区
-  `04-exp/2026-10-18-electron-shell-wont-open/README.md`。
-
+- **补充（同日晚些时候）—— 第二个坑与最终定案，结论已修正两次，按时间如实留档**：
+  1. `--no-sandbox` 只绕过了一半。第二个故障是 Chromium 在默认 profile `%APPDATA%\dsh-electron` 里
+     **建不出单实例锁**（`process_singleton_win.cc(465) Lock file can not be created! Error code: 5`，
+     锁文件名是 `lockfile`），于是 `requestSingleInstanceLock()` 返 false、程序**在写日志之前**就退出
+     （= 无窗口无日志）。同一目录 `cmd` 能写、换 `--user-data-dir` 立刻正常；**根因至今未定**。
+  2. **沙箱那一半的根因定案**：整个工作区树带 `Mandatory Label\Low Mandatory Level:(OI)(CI)(NW)`
+     （DSH 沙箱打的），Chromium 拒绝在低完整性安装目录里启用沙箱。判定实验：同一份 dist 复制到
+     工作区之外 → `electron.exe --version` 打印 `v33.4.11`（沙箱默认开启、普通权限）；在工作区内 → 崩。
+  3. **最终处置**：只把 `node_modules\electron\dist\**` 与工作区 `03-shortcuts` 的三个入口文件提成 Medium，
+     其余保持 Low。⇒ **快捷方式已不需要 `--no-sandbox`**，`app.enableSandbox()` 照常生效；
+     代价是 `npm i/ci` 重装 electron 后要重跑一次提标签脚本（`fix-integrity-labels.cmd`，管理员）。
+     完整判定矩阵（6 组对照）与四个方案的代价见工作区 `04-exp/2026-10-18-electron-shell-wont-open/README.md` 第 10 节。
 ---
 
 ## v1.4.1 —— 令牌 → Cookie 兑换修正（v1.4.0 的修复）

@@ -162,7 +162,7 @@
 ```powershell
 npm install                    # 首次
 npm start                      # 启动独立窗口
-npm run start:no-sandbox       # 同上，但不强制 Chromium 沙箱（本机沙箱不可用时的兜底）
+npm run start:no-sandbox       # 兜底：不强制 Chromium 沙箱（本机已通过提标签解决，一般不需要）
 npm test                       # 126 个自动化用例
 npm run selftest               # 真实环境自检（建议在普通终端运行）
 node tools\selftest.js --inspect 3080   # 只读：看 3080 被谁监听（不终止任何进程）
@@ -177,15 +177,17 @@ npm run dist                   # 打包安装包（需 electron-builder）
 同目录还有 `停止 DSH 服务.lnk`（等价于 `npm stop`）。
 若移动了项目目录，请重建这两个快捷方式。直接用命令行时不需要它们：`npm start` 即可。
 
-> **本机注意（2026-10-18 起）**：这台机器同时踩了两个机器级故障 ——
-> ① Chromium 沙箱起不来（一开沙箱就秒崩，`--no-sandbox` 正常）；
-> ② 默认 profile `%APPDATA%\dsh-electron` 里**建不出单实例锁**
-> （`Lock file can not be created! Error code: 5` → `requestSingleInstanceLock()` 返回 false
-> → 程序在写日志之前就退出，表现为"无窗口无日志"）。
-> 因此本机 `DSH.lnk` 的参数是 `. --no-sandbox --user-data-dir="…\01-scratch\dsh-userdata"`。
-> 判据、时间线、"怎么恢复沙箱与默认 profile"见工作区
-> `04-exp/2026-10-18-electron-shell-wont-open/README.md`。
-> 降级不静默：`load-status.log` 里一定有 `启动参数含 --no-sandbox` 那条 WARN。
+> **本机注意（2026-10-18 定稿）**：这台机器有两个机器级坑，都已处置 ——
+> ① **工作区整棵树带 `Low` 完整性标签**（DSH 沙箱打的）→ Chromium 拒绝在低完整性安装目录里
+>    启用沙箱（`electron.exe` 一开沙箱就崩 `0x80000003`）、Explorer 也不给该树里的图标渲染。
+>    处置：只把 `node_modules\electron\dist\**` 与工作区 `03-shortcuts` 的三个入口文件提成 Medium，
+>    其余保持 Low（否则 agent 改不动文档与代码）。脚本见工作区
+>    `04-exp/2026-10-18-electron-shell-wont-open/fix-integrity-labels.cmd`（管理员，幂等；
+>    **`npm i/ci` 重装 electron 后要重跑**）。⇒ 因此快捷方式**不再需要** `--no-sandbox`。
+> ② **默认 profile `%APPDATA%\dsh-electron` 里建不出单实例锁**（`Lock file can not be created! Error code: 5`
+>    → `requestSingleInstanceLock()` 返 false → 程序在写日志前退出，表现为"无窗口无日志"）。
+>    根因仍未定；处置是快捷方式带 `--user-data-dir="…\01-scratch\dsh-userdata"`。
+> 判据、6 组对照与四个处置方案的取舍见工作区 `04-exp/2026-10-18-electron-shell-wont-open/README.md`。
 
 本项目在工作区中属于源代码区 `02-projects\dev\dsh_electron\`
 （各版本分发单独归档在 `02-projects\release\dsh_electron\<版本>\`，均不在本仓库内）。
@@ -345,8 +347,8 @@ npm run dist
 | 启动报"DSH_URL 指向非本机地址" | 安全默认值。确需远端请设 `DSH_ALLOW_REMOTE=1` |
 | 右侧一直停在占位页，但端口明明有响应 | 默认要求响应为 `text/html` 才认作 DSH（防止把陌生服务当 DSH 加载进外壳）。若你的入口返回其它类型，设 `DSH_HEALTH_REQUIRE_HTML=0` |
 | **双击打包版没反应**（无窗口、无日志、进程秒退） | 只发生在 ≤1.3.1：打包版与开发版共用 `%APPDATA%\dsh-electron`，先启动的那个持有单实例锁。升级到 v1.3.2（userData 已隔离）或先退掉另一个；临时绕过可加 `--user-data-dir=<另一个目录>`（见第八节末） |
-| **双击完全没反应**：无窗口、`load-status.log` **一条都不写**、Windows 事件日志里也没有崩溃记录 | 单实例锁建不出来。Chromium 130 在 profile 目录建 `<userData>\lockfile`（`GENERIC_WRITE` + `FILE_FLAG_DELETE_ON_CLOSE`），失败即 `Lock file can not be created! Error code: 5` → `requestSingleInstanceLock()` 返 false → 程序在写日志前就退出。**根因未定**（同参数换进程/换目录都正常）→ 先用 `--user-data-dir=<可写目录>` 绕过；要定论用 `--enable-logging --log-file=…` 抓那行错误，并查 `%APPDATA%\<userData>\lockfile` 的属性/ACL |
-| **双击即闪退 / 空白窗口几秒后自退**，日志里只有 `DSH 视图进程异常退出: launch-failed`，事件日志里是 `electron.exe 0xc0000005`（故障模块 electron.exe 自身），另有 `GPU process launch failed: error_code=18`、`Network service crashed` | **本机 Chromium 沙箱初始化失败**，不是本项目的 bug。判据：`electron.exe --version` 加沙箱就秒崩（退出码 `0x80000003`、一个字不输出），`--no-sandbox` 正常。处理：`npm run start:no-sandbox`；v1.4.2 起会**跳过 `app.enableSandbox()`** 并留 WARN。根因多半是本机常驻安全软件（火绒 / 联想电脑管家 / Defender）拦未签名进程，可加信任区后**再撤掉**该参数。两处根因的完整证据见工作区 `04-exp/2026-10-18-electron-shell-wont-open/README.md` |
+| **双击完全没反应**：无窗口、`load-status.log` **一条都不写**、Windows 事件日志里也没有崩溃记录 | 单实例锁建不出来。Chromium 130 在 profile 目录建 `<userData>\lockfile`（`GENERIC_WRITE` + `FILE_FLAG_DELETE_ON_CLOSE`），失败即 `Lock file can not be created! Error code: 5` → `requestSingleInstanceLock()` 返 false → 程序在写日志前就退出。**根因至今未定**（同参数换进程/换目录都正常）→ 先用 `--user-data-dir=<可写目录>` 绕过；要定论用 `--enable-logging --log-file=…` 抓那行错误，并查 `%APPDATA%\<userData>\lockfile` 的属性/ACL |
+| **双击即闪退 / 空白窗口几秒后自退**，日志里只有 `DSH 视图进程异常退出: launch-failed`，事件日志里是 `electron.exe 0xc0000005`（故障模块 electron.exe 自身），另有 `GPU process launch failed: error_code=18`、`Network service crashed` | **在本机这是"安装目录带 `Low` 完整性标签"导致的**：Chromium 拒绝在低完整性安装目录里启用沙箱（已用同一份 dist 复制到工作区之外验证：那边正常）。处置不是长期关沙箱，而是把 `node_modules\electron\dist\**` 提成 Medium —— 见工作区 `04-exp/2026-10-18-electron-shell-wont-open/README.md` 第 10 节与其中的 `fix-integrity-labels.cmd`。只有在没有提标签权限的机器上才退回 `npm run start:no-sandbox` |
 
 ### 从旧版（v1.0.0 / v1.1.0）切换到当前版本（重要）
 
