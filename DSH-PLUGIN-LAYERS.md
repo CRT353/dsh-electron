@@ -288,7 +288,7 @@ DSH 0.2 起本地 Web 服务是**两步认证**，不是"带上 token 就行"：
 | 坑 | 说明 |
 |---|---|
 | **安装与启动会校验 DSH peer 范围** | 不兼容插件**需用户明确确认豁免**（`version-exemptions` / `allow-version` / `revoke-version`）|
-| **`0.2.0-rc.2` 是 rc** | API 可能变；**升级 DSH 后要重跑** `npm test`（当前 126 项）并复核本文件 |
+| **`0.2.0-rc.2` 是 rc** | API 可能变；**升级 DSH 后要重跑** `npm test`（当前 127 项）并复核本文件 |
 | **外壳必须 ≥ v1.4.1 才能配 DSH 0.2** | v1.4.0 及更早会卡在"服务未就绪" |
 
 ---
@@ -306,7 +306,7 @@ DSH 0.2 起本地 Web 服务是**两步认证**，不是"带上 token 就行"：
 | 用户层 | `profiles/web/cordis.patch.yml` = 空 `[]` |
 | home 层 | `$DSH_HOME/cordis.patch.yml` **不存在** |
 | 服务 | `dsh web` 监听 `127.0.0.1:3080`，由外壳管理 |
-| 应用测试 | **126 项全过**（`npm test`）|
+| 应用测试 | **127 项全过**（`npm test`，2026-10-18 实测）|
 
 ---
 

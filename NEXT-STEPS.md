@@ -11,9 +11,9 @@
 
 | 位置 | 状态 |
 |---|---|
-| `02-projects/dev/dsh_electron/` （应用仓库） | 分支 `main`，版本号 **1.4.1**（提交 `5089dd6`；其后只有文档提交）|
+| `02-projects/dev/dsh_electron/` （应用仓库） | 分支 `main`，版本号 **1.4.2**（提交 `57d362c`；产物归档最新仍为 **1.4.1**）|
 | `D:\Desktop\08-AI_Workspace\`（工作区仓库） | 分支 `main`；gitlink 指向应用仓库的某个提交 —— **本行不再写死编号**，用 `git ls-files -s 02-projects/dev/dsh_electron` 查 |
-| 测试 | 应用：`npm test` → **126/126**；会话工具箱：`node --test --test-isolation=none session-log-tools.test.mjs` → **21/21** |
+| 测试 | 应用：`npm test` → **127/127**（2026-10-18 实测）；会话工具箱：`node --test --test-isolation=none session-log-tools.test.mjs` → **21/21** |
 | **DSH 版本** | **`0.2.0-rc.2`**（2026-10-16 由 `0.1.1-rc.2` 升级，**破坏性变更**：Web 服务加了令牌 + 会话 Cookie 两步认证）|
 | DSH 服务 | 由 Electron 外壳管理，`127.0.0.1:3080`。**外壳必须 ≥ v1.4.1 才能配 DSH 0.2**（v1.4.0 及更早会卡在"服务未就绪"）|
 | **插件层级** | 见本仓库 **[DSH-PLUGIN-LAYERS.md](./DSH-PLUGIN-LAYERS.md)** —— 想做层级/溯源相关开发，**先读它** |

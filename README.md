@@ -163,7 +163,7 @@
 npm install                    # 首次
 npm start                      # 启动独立窗口
 npm run start:no-sandbox       # 兜底：不强制 Chromium 沙箱（本机已通过提标签解决，一般不需要）
-npm test                       # 126 个自动化用例
+npm test                       # 127 个自动化用例
 npm run selftest               # 真实环境自检（建议在普通终端运行）
 node tools\selftest.js --inspect 3080   # 只读：看 3080 被谁监听（不终止任何进程）
 npm stop                       # 安全停止 DSH 服务（带身份校验，不会误杀其它 node 进程）
@@ -233,7 +233,7 @@ npm run dist                   # 打包安装包（需 electron-builder）
 ## 七、测试与自检
 
 ```powershell
-npm test                        # 126 项：单测 + 集成测试 + 装配层 + 渲染层 + 桥接契约 + 自检退出码
+npm test                        # 127 项：单测 + 集成测试 + 装配层 + 渲染层 + 桥接契约 + 自检退出码
 npm run selftest                # 真实 netstat/ps → 认领 → taskkill/kill → 端口释放 全链路
 node tools\selftest.js --inspect 3080   # 只读：看 3080 被谁监听（不终止任何进程）
 ```
@@ -284,7 +284,7 @@ npm run dist                    # 输出 dist/：NSIS 安装包 + 免安装单�
 > **产物与源码的版本对应**：产物由 `npm run dist` 现场生成在 `dist\`，并按版本归档到
 > **工作区**的 `02-projects\release\dsh_electron\<版本>\`（该目录不在本仓库内，
 > 本仓库不发布预编译二进制）。
-> 当前是 **v1.4.0**；各版本的用途与"该用哪个"见
+> 当前源码版本是 **v1.4.2**（源码已升版；产物归档最新仍是 **v1.4.1**）；各版本的用途与"该用哪个"见
 > `02-projects\release\dsh_electron\README.md`。
 >
 > 打包完请跑一次自动验收 —— 它直接读产物 asar 里的 `lib/config.js`（该文件不依赖 Electron），
@@ -413,7 +413,7 @@ npm start
 | `renderer/index.html` `sidebar.css` `sidebar.js` | 侧边栏 UI（严格 CSP，全部 `textContent` 渲染，告警/详情文本可选中复制） |
 | `renderer/view-placeholder.html` | 服务未就绪时的占位页 |
 | `lib/*.js` | 可单测的业务逻辑（含 `context-menu.js` 右键菜单模板，见上） |
-| `tests/*.test.js` | 126 个自动化用例；`tests/dummy-server.js` 为假 DSH 服务 |
+| `tests/*.test.js` | 127 个自动化用例；`tests/dummy-server.js` 为假 DSH 服务 |
 | `tools/selftest.js` | 真实环境全链路自检 / 只读端口检查 |
 | `tools/stop-dsh.js` | 安全停止工具（`npm stop`）：带身份校验，不会误杀其它 node 进程 |
 | `tools/gen-icon.js` | 纯 Node 生成 `icon.png` 与 `build/icon.ico` |
