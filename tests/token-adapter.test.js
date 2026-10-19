@@ -83,7 +83,46 @@ function baseConfig(port, extra = {}) {
   };
 }
 
+/**
+ * 受限沙箱里 `spawn()` 带 **pipe** 会直接 EPERM（本仓库的既有事实，见 AGENTS/README 与
+ * tests/selftest.test.js 的 runNode）。本用例的唯一目的是验证"外壳 + 健康检查"的令牌链路，
+ * 那必须让假服务把令牌打到 **stdout 管道**上 —— 沙箱里做不到。
+ *
+ * 因此先探测能力：不支持就**明确跳过**（并说清是环境限制），而不是让断言在
+ * `currentUrl()` 上失败 —— 那条失败信息会把"沙箱禁止管道"误报成"令牌适配坏了"，
+ * 正是本仓库反复强调要避免的那类误判。
+ */
+function probePipedSpawn() {
+  return new Promise((resolve) => {
+    let child;
+    try {
+      child = realSpawn(process.execPath, ['-e', '0'], { stdio: ['ignore', 'pipe', 'pipe'] });
+    } catch (err) {
+      resolve({ ok: false, reason: err && err.code ? err.code : String(err) });
+      return;
+    }
+    let settled = false;
+    const done = (result) => {
+      if (settled) return;
+      settled = true;
+      try { child.kill('SIGKILL'); } catch (_) { /* 忽略 */ }
+      resolve(result);
+    };
+    child.on('error', (err) => done({ ok: false, reason: err && err.code ? err.code : String(err) }));
+    child.on('exit', () => done({ ok: true }));
+  });
+}
+
 test('集成：外壳从 stdout 取到令牌后，健康检查从 401 转为身份确认（200+text/html）', async (t) => {
+  const capability = await probePipedSpawn();
+  if (!capability.ok) {
+    t.skip(
+      `受限环境禁止以管道捕获子进程输出（spawn ${capability.reason}）：本用例需要真实子进程把令牌` +
+        '打到 stdout 管道上。请在**普通终端**重跑本文件以覆盖这条链路。'
+    );
+    return;
+  }
+
   const port = await freePort();
   assert.notStrictEqual(port, PROD_PORT, '禁止使用生产端口');
 

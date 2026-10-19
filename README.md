@@ -233,7 +233,7 @@ npm run dist                   # 打包安装包（需 electron-builder）
 ## 七、测试与自检
 
 ```powershell
-npm test                        # 127 项：单测 + 集成测试 + 装配层 + 渲染层 + 桥接契约 + 自检退出码
+npm test                        # 129 项：单测 + 集成测试 + 装配层 + 渲染层 + 桥接契约 + 自检退出码
 npm run selftest                # 真实 netstat/ps → 认领 → taskkill/kill → 端口释放 全链路
 node tools\selftest.js --inspect 3080   # 只读：看 3080 被谁监听（不终止任何进程）
 ```
@@ -246,6 +246,9 @@ node tools\selftest.js --inspect 3080   # 只读：看 3080 被谁监听（不�
 
 - `npm test` 用 `--test-isolation=none` 以便在受限终端（禁止子进程管道）里也能跑；在普通终端也可以直接
   `node --test tests/`。
+- 唯一**必须**用真实子进程 stdout 管道的一条集成用例（`tests/token-adapter.test.js` 的"stdout 令牌 →
+  200/text/html"）在禁止管道的受限沙箱里会先探测能力、然后**明确跳过**（显示 `﹣` 并给出原因）；
+  它不会把"环境限制"伪装成失败。普通终端里这条会完整跑，129 项全通过。
 - `tests/service.test.js` 用**真实子进程 + 真实端口探测**验证"拉起 → 认领监听 pid → 清理 → 端口释放"，
   测试内注入的只是"进程查询"这一类需要系统命令的依赖；随机端口，绝不使用 3080。覆盖六个归属状态
   （含 `foreign`）、就绪失败的三条分支、清理预算、双平台终止策略、终止前身份复验。

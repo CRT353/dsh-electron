@@ -342,6 +342,45 @@ test('findListenerPidDetailed：区分"查询失败"与"这个端口没人监听
   assert.strictEqual(otherPort.listener, null);
 });
 
+test('findListenerPidDetailed（POSIX）：lsof 缺失时 ss 查到的监听者不得被丢掉', () => {
+  // 回归：旧实现用 lsof 的返回值判定查询成败，于是"lsof 不存在、ss 查到了"这种
+  // 精简 Linux 镜像里的常见组合会被报成 queryFailed 并把 listener 丢弃
+  // ⇒ 外壳无法认领自己拉起的服务，清理时又拒绝终止（留孤儿）。
+  const ssOutput = [
+    'State  Recv-Q Send-Q Local Address:Port Peer Address:Port Process',
+    'LISTEN 0      511        127.0.0.1:3080      0.0.0.0:*    users:(("node",pid=4321,fd=21))'
+  ].join('\n');
+  const calls = [];
+  const viaSs = findListenerPidDetailed(3080, {
+    platform: 'linux',
+    host: '127.0.0.1',
+    exec: (spec) => {
+      calls.push(spec.file);
+      if (spec.file === 'lsof') return { ok: false, stdout: '', stderr: 'lsof: not found', code: 127 };
+      if (spec.file === 'ss') return { ok: true, stdout: ssOutput, stderr: '', code: 0 };
+      if (spec.file === 'ps') {
+        return { ok: true, stdout: '/usr/bin/node /opt/dsh/lib/bin.js web --no-open\n', stderr: '', code: 0 };
+      }
+      return { ok: false, stdout: '', stderr: `unexpected ${spec.file}`, code: 1 };
+    }
+  });
+  assert.deepStrictEqual(calls.slice(0, 2), ['lsof', 'ss'], 'lsof 失败后必须真的去试 ss');
+  assert.strictEqual(viaSs.queryFailed, false, 'ss 成功即查询成功，不得报"lsof/ss 均不可用"');
+  assert.ok(viaSs.listener, 'ss 查到的监听者不得被丢掉');
+  assert.strictEqual(viaSs.listener.pid, 4321);
+  assert.strictEqual(viaSs.listener.name, 'node');
+
+  // 两条来源都不可用时仍然要如实报"查询失败"，绝不能谎称"端口空闲"
+  const bothFailed = findListenerPidDetailed(3080, {
+    platform: 'linux',
+    host: '127.0.0.1',
+    exec: (spec) => ({ ok: false, stdout: '', stderr: `${spec.file}: not found`, code: 127 })
+  });
+  assert.strictEqual(bothFailed.listener, null);
+  assert.strictEqual(bothFailed.queryFailed, true);
+  assert.match(bothFailed.reason, /lsof\/ss/);
+});
+
 test('readProcessInfo：解析 CIM / tasklist / ps 三种输出（此前零覆盖的命令行证据链）', () => {
   // Windows CIM（Get-CimInstance）：名字 \t 命令行
   const winCim = readProcessInfo(4242, {

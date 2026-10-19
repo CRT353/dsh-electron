@@ -230,9 +230,9 @@
 
 ## 六、索引（要找东西从这里进）
 - 应用：`README.md`（**v1.3.1 变化**一节逐组记录了本轮改了什么、旧实现的具体表现）、`package.json`、`main.js`、`lib/*.js`、
-  `tools/*.js`（含 `verify-packaged-logpath.js`）、`tests/*.test.js`（**126 项**）、`renderer/*`。
+  `tools/*.js`（含 `verify-packaged-logpath.js`）、`tests/*.test.js`（**129 项**；受限沙箱里 1 条需管道的集成用例会明确跳过）、`renderer/*`。
 - 会话工具箱：`02-projects\dev\dsh-session-tools\README.md`（**「解码模型」一节是改它之前必读**）+
-  `session-log-*.mjs` + `session-log-dsh.mjs`（DSH codec 桥接层）+ `session-log-tools.test.mjs`（**21 项**）。
+  `session-log-*.mjs` + `session-log-dsh.mjs`（DSH codec 桥接层）+ `session-log-tools.test.mjs`（**27 项**）。
 - 已发布产物：`02-projects\release\dsh_electron\1.3.1\`（`SHA256SUMS.txt` + `RELEASE.txt`，
   后者第五节"验证状态"记的就是本轮实测结论）。
 - 标签：`v1.3.1` → `0fd1df1`（= 1.3.1 产物的构建来源）。后续提交都是**发布之后**的提交，未打标签。

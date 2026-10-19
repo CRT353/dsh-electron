@@ -50,6 +50,22 @@ git tag --list --format='%(refname:short)  %(objectname:short)  %(subject)'
      其余保持 Low。⇒ **快捷方式已不需要 `--no-sandbox`**，`app.enableSandbox()` 照常生效；
      代价是 `npm i/ci` 重装 electron 后要重跑一次提标签脚本（`fix-integrity-labels.cmd`，管理员）。
      完整判定矩阵（6 组对照）与四个方案的代价见工作区 `04-exp/2026-10-18-electron-shell-wont-open/README.md` 第 10 节。
+- **补充（2026-10-19 审计修复，仍未打包）—— 三处与沙箱无关的缺陷**：
+  1. `lib/procs.js#findListenerPidDetailed`（POSIX）：判"查询失败"用的是 **lsof 的返回值**，
+     于是"lsof 不存在、ss 却查到了监听者"这种精简 Linux 镜像里的常见组合被报成 `queryFailed`
+     并把已拿到的 listener 丢掉 ⇒ 外壳永远无法认领服务，清理时又因 `_resolveListener()` 返回
+     null 而拒绝终止（服务被留成孤儿）。改为"**至少一条来源成功**即查询成功"。
+     回归用例：`tests/procs.test.js`「lsof 缺失时 ss 查到的监听者不得被丢掉」。
+  2. `lib/config.js#num()`：`Number('')` 与 `Number('   ')` 都是 0，旧实现把**空值收敛到下限**
+     而不是回落到默认。cmd 的 `set VAR=`（或在脚本里清空变量）就会产生空值，于是
+     `DSH_KILL_TIMEOUT=` 把退出清理预算从 8s 悄悄降到 1s（超预算 → 服务留成孤儿），
+     `DSH_READY_TIMEOUT=` 把 60s 降到 5s（冷启动被误判"未就绪"）。现在空白与 `bool()` 同口径：
+     按"未设置"处理，非法数字仍回落默认。
+  3. `tests/token-adapter.test.js`：唯一需要真实子进程 **stdout 管道**的集成用例，在禁止管道的
+     受限沙箱里必然 `spawn EPERM`，而断言信息却指向 `currentUrl()` —— 把"环境限制"误报成
+     "令牌适配坏了"。现在先探测能力，不支持就**明确跳过**并说明原因；普通终端仍完整跑。
+     令牌链路本身已用"同进程假 spawn"单独验证（managed + 拿到 token + 探测 200/text/html）。
+  - 测试项数：**127 → 129**（受限沙箱下 128 通过 + 1 条明确跳过；普通终端 129 全通过）。
 ---
 
 ## v1.4.1 —— 令牌 → Cookie 兑换修正（v1.4.0 的修复）

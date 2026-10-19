@@ -95,6 +95,26 @@ test('数值项做范围收敛，避免轮询风暴', () => {
   assert.strictEqual(config.dshFailThreshold, 10);
 });
 
+test('数值项：空值/空白按"未设置"处理，不得被收敛到下限（cmd 的 `set VAR=` 就会产生空值）', () => {
+  // 旧实现 `num()` 直接把 Number('') 当成 0 再收敛到下限：DSH_KILL_TIMEOUT 被清空
+  // ⇒ 退出清理预算从 8s 变 1s ⇒ 服务可能来不及清理而被留成孤儿；
+  // DSH_READY_TIMEOUT 被清空 ⇒ 60s 变 5s ⇒ 冷启动被误判"未就绪"。
+  const config = loadConfig({
+    DSH_POLL_INTERVAL: '',
+    DSH_CHECK_TIMEOUT: '   ',
+    DSH_READY_TIMEOUT: '',
+    DSH_KILL_TIMEOUT: ' ',
+    DSH_NET_FAIL_THRESHOLD: ''
+  });
+  assert.strictEqual(config.pollIntervalMs, 5000, '空值应回落到默认 5000，而不是下限 1000');
+  assert.strictEqual(config.checkTimeoutMs, 3000, '空白应回落到默认 3000，而不是下限 500');
+  assert.strictEqual(config.readyTimeoutMs, 60000, '空值应回落到默认 60000，而不是下限 5000');
+  assert.strictEqual(config.killTimeoutMs, 8000, '空值应回落到默认 8000，而不是下限 1000');
+  assert.strictEqual(config.netFailThreshold, 2, '空值应回落到默认 2，而不是下限 1');
+  // 非空但非数字仍按"写错了"回落到默认（既有语义不变）
+  assert.strictEqual(loadConfig({ DSH_POLL_INTERVAL: 'abc' }).pollIntervalMs, 5000);
+});
+
 test('布尔与列表类环境变量解析', () => {
   const config = loadConfig({
     DSH_NET_CHECK: '0',
